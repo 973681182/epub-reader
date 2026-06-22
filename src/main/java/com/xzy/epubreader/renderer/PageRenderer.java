@@ -13,32 +13,35 @@ public class PageRenderer {
     private int pageRows;  // 每页可用行数（总高度 - 状态栏 - 命令条）
 
     /**
-     * 对整本书的所有章节进行分页。
-     *
-     * @param book          书籍对象
-     * @param terminalWidth  终端宽度（字符列数）
-     * @param terminalHeight 终端高度（字符行数）
+     * 对整本书所有章节分页（初次打开时使用）。
      */
     public void render(Book book, int terminalWidth, int terminalHeight) {
-        this.terminalWidth = Math.max(terminalWidth, 40);    // 最小宽度 40
-        this.terminalHeight = Math.max(terminalHeight, 10);   // 最小高度 10
-        this.pageRows = Math.max(this.terminalHeight - 2, 3); // 减去状态栏和命令条
+        this.terminalWidth = Math.max(terminalWidth, 40);
+        this.terminalHeight = Math.max(terminalHeight, 10);
+        this.pageRows = Math.max(this.terminalHeight - 2, 3);
 
         for (Chapter chapter : book.getChapters()) {
             chapter.clearPages();
-            if (chapter.getPlainText().isEmpty()) {
+            if (!chapter.getPlainText().isEmpty()) {
+                paginateChapter(chapter);
+            } else {
                 chapter.addPage("（空章节）");
-                continue;
             }
-            paginateChapter(chapter);
         }
     }
 
     /**
-     * 重新分页（用于终端尺寸变化时）— 保留旧尺寸作为回退。
+     * 重新分页。
      */
     public void reRender(Book book, int terminalWidth, int terminalHeight) {
         render(book, terminalWidth, terminalHeight);
+    }
+
+    /** 确保指定章节已分页（懒渲染） */
+    public void ensureChapterRendered(Chapter chapter) {
+        if (chapter.getPageCount() == 0 && !chapter.getPlainText().isEmpty()) {
+            paginateChapter(chapter);
+        }
     }
 
     /**
