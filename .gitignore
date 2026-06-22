@@ -35,3 +35,8 @@ build/
 ### Mac OS ###
 .DS_Store
 /src/main/resources/
+
+### Claude Code ###
+.claude/
+
+dist/
