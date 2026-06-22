@@ -22,6 +22,9 @@ public class ScreenRenderer {
     private static final String DIM     = "\033[2m";
     private static final String CYAN    = "\033[36m";
     private static final String REVERSE = "\033[7m";
+    private static final String GREEN   = "\033[32m";
+    private static final String RED     = "\033[31m";
+    private static final String HINT    = "\033[94m";  // 亮蓝色，与正常文字有明显色差
 
     private int terminalWidth;
     private int terminalHeight;
@@ -56,7 +59,7 @@ public class ScreenRenderer {
      * @param entries 书架条目列表
      * @param selectedIndex 当前选中索引 (-1 表示无选中)
      */
-    public void drawLibraryScreen(List<LibraryEntry> entries, int selectedIndex) {
+    public void drawLibraryScreen(List<LibraryEntry> entries, int selectedIndex, String message, boolean isError) {
         clearContent();
         int row = 0;
 
@@ -85,6 +88,13 @@ public class ScreenRenderer {
 
         fillRemainingLines(row);
 
+        // 消息提示（添加/删除结果）
+        if (message != null && !message.isEmpty()) {
+            moveCursorTo(terminalHeight - 1, 1);
+            String text = "  " + message;
+            write(isError ? red(padRight(text, terminalWidth)) : green(padRight(text, terminalWidth)));
+        }
+
         // 底部操作栏
         drawBottomBar(" [↑↓]选择 [Enter]打开 [a]添加 [d]移除 [q]退出 ");
     }
@@ -92,7 +102,7 @@ public class ScreenRenderer {
     /**
      * 绘制添加文件的提示画面。
      */
-    public void drawAddBookPrompt(String inputSoFar) {
+    public void drawAddBookPrompt(String inputSoFar, int cursorPos, String completionHint) {
         clearContent();
         int row = 0;
 
@@ -105,8 +115,8 @@ public class ScreenRenderer {
 
         fillRemainingLines(row);
 
-        // 输入栏
-        drawInputBar(inputSoFar);
+        // 输入栏（带光标定位和补全提示）
+        drawInputBarWithCompletion(inputSoFar, cursorPos, completionHint);
     }
 
     /**
@@ -324,9 +334,33 @@ public class ScreenRenderer {
         flush();
     }
 
-    private void drawInputBar(String input) {
+    /** 输入栏：青色提示符 + 用户输入 + 灰色补全提示，光标定位到正确位置 */
+    private void drawInputBarWithCompletion(String input, int cursorPos, String completion) {
         moveCursorTo(terminalHeight, 1);
-        write(CYAN + "> " + RESET + input);
+        write("\033[K");  // 先清除整行
+        write(CYAN + "> " + RESET);
+        write(input);
+        if (completion != null && !completion.isEmpty()) {
+            write(hint(completion));
+        }
+        // 将终端光标移到用户输入中的正确位置
+        moveCursorTo(terminalHeight, 3 + cursorPos);
+        flush();
+    }
+
+    /** 命令模式输入行重绘：只更新最底行，不清屏 */
+    public void redrawCommandLine(String input, int cursorPos, String completion) {
+        drawInputBarWithCompletion(input, cursorPos, completion);
+    }
+
+    /** 删除确认栏：覆盖底部操作栏，提示用户确认 */
+    public void drawDeleteConfirmBar(String bookTitle) {
+        moveCursorTo(terminalHeight, 1);
+        String hint = " 确认删除《" + bookTitle + "》？ [Enter]确认 [ESC]取消 ";
+        if (hint.length() > terminalWidth) {
+            hint = hint.substring(0, terminalWidth);
+        }
+        write(red(hint));
         flush();
     }
 
@@ -372,6 +406,9 @@ public class ScreenRenderer {
     private String bold(String s) { return BOLD + s + RESET; }
     private String dim(String s) { return DIM + s + RESET; }
     private String cyan(String s) { return CYAN + s + RESET; }
+    private String green(String s) { return GREEN + s + RESET; }
+    private String red(String s) { return RED + s + RESET; }
+    private String hint(String s) { return HINT + s + RESET; }
 
     private String centerText(String text) {
         int textWidth = text.replaceAll("\033\\[[;\\d]*m", "").length();

@@ -39,6 +39,17 @@ public class TerminalUI {
     // 书架
     private List<LibraryEntry> library;
     private int librarySelected;
+    private String libraryMessage = null;
+    private boolean libraryMessageIsError = false;
+
+    // 输入历史
+    private final List<String> pathHistory = new ArrayList<>();
+    private int pathHistoryIndex = -1;
+    private String pathHistoryDraft = null;
+
+    private final List<String> commandHistory = new ArrayList<>();
+    private int commandHistoryIndex = -1;
+    private String commandHistoryDraft = null;
 
     // 当前打开的书
     private Book currentBook;
@@ -59,6 +70,7 @@ public class TerminalUI {
     public void start() throws IOException {
         storage.init();
         library = storage.loadLibrary();
+        scanBooksDirectory();
         initTerminal();
 
         try {
@@ -78,6 +90,7 @@ public class TerminalUI {
     public void openDirectly(String filePath) throws IOException {
         storage.init();
         library = storage.loadLibrary();
+        scanBooksDirectory();
         initTerminal();
 
         try {
@@ -120,7 +133,14 @@ public class TerminalUI {
     private void libraryLoop() throws IOException {
         while (mode == Mode.LIBRARY && running) {
             updateTerminalSize();
-            screen.drawLibraryScreen(library, librarySelected);
+
+            // 捕获上一次操作的消息并清除，确保消息只显示一次
+            String msg = libraryMessage;
+            boolean msgErr = libraryMessageIsError;
+            libraryMessage = null;
+            libraryMessageIsError = false;
+
+            screen.drawLibraryScreen(library, librarySelected, msg, msgErr);
 
             int key = readKey();
             if (key == Key.CTRL_C) { running = false; return; }
@@ -153,41 +173,149 @@ public class TerminalUI {
                     break;
 
                 case 'd': case 'D':
-                    if (!library.isEmpty() && librarySelected >= 0 && librarySelected < library.size()) {
-                        library.remove(librarySelected);
-                        if (librarySelected >= library.size()) librarySelected = Math.max(0, library.size() - 1);
-                        storage.saveLibrary(library);
-                    }
+                    confirmDeleteFlow();
                     break;
             }
         }
     }
 
-    /** 添加书籍流程：显示输入画面，读取路径，解析并添加到书架 */
+    /** 添加书籍流程：支持光标移动、历史记录、Tab 路径补全 */
     private void addBookFlow() throws IOException {
         StringBuilder sb = new StringBuilder();
-        while (true) {
-            screen.drawAddBookPrompt(sb.toString());
-            int c = readKeyRaw();
+        int cursorPos = 0;
 
-            if (c == Key.ESC) return;           // 取消
+        while (true) {
+            String completion = getPathCompletion(sb.toString());
+            screen.drawAddBookPrompt(sb.toString(), cursorPos, completion);
+
+            int c = readKeyInput();
+            if (c == Key.ESC) return;
             if (c == Key.CTRL_C) { running = false; return; }
-            if (c == Key.ENTER) break;          // 确认
+            if (c == Key.ENTER) break;
 
             if (c == Key.BACKSPACE) {
-                if (sb.length() > 0) sb.deleteCharAt(sb.length() - 1);
+                if (cursorPos > 0) {
+                    sb.deleteCharAt(cursorPos - 1);
+                    cursorPos--;
+                }
                 continue;
             }
 
-            // 可打印字符，回显在输入栏
+            if (c == Key.DELETE) {
+                if (cursorPos < sb.length()) {
+                    sb.deleteCharAt(cursorPos);
+                }
+                continue;
+            }
+
+            if (c == Key.LEFT) {
+                if (cursorPos > 0) cursorPos--;
+                continue;
+            }
+
+            if (c == Key.RIGHT) {
+                if (cursorPos < sb.length()) cursorPos++;
+                continue;
+            }
+
+            if (c == Key.HOME) {
+                cursorPos = 0;
+                continue;
+            }
+
+            if (c == Key.END) {
+                cursorPos = sb.length();
+                continue;
+            }
+
+            if (c == Key.UP) {
+                if (!pathHistory.isEmpty()) {
+                    if (pathHistoryIndex == -1) {
+                        pathHistoryDraft = sb.toString();
+                        pathHistoryIndex = pathHistory.size() - 1;
+                    } else if (pathHistoryIndex > 0) {
+                        pathHistoryIndex--;
+                    }
+                    sb = new StringBuilder(pathHistory.get(pathHistoryIndex));
+                    cursorPos = sb.length();
+                }
+                continue;
+            }
+
+            if (c == Key.DOWN) {
+                if (pathHistoryIndex != -1) {
+                    if (pathHistoryIndex < pathHistory.size() - 1) {
+                        pathHistoryIndex++;
+                        sb = new StringBuilder(pathHistory.get(pathHistoryIndex));
+                    } else {
+                        pathHistoryIndex = -1;
+                        sb = new StringBuilder(pathHistoryDraft != null ? pathHistoryDraft : "");
+                        pathHistoryDraft = null;
+                    }
+                    cursorPos = sb.length();
+                }
+                continue;
+            }
+
+            if (c == Key.TAB) {
+                String comp = getPathCompletion(sb.toString());
+                if (comp != null) {
+                    sb.append(comp);
+                    cursorPos = sb.length();
+                }
+                continue;
+            }
+
             if (c >= 32) {
-                sb.append((char) c);
+                sb.insert(cursorPos, (char) c);
+                cursorPos++;
             }
         }
 
         String path = sb.toString().trim();
         if (!path.isEmpty()) {
+            // 去掉两端引号（复制路径时常带引号）
+            if (path.length() >= 2) {
+                char first = path.charAt(0);
+                char last = path.charAt(path.length() - 1);
+                if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                    path = path.substring(1, path.length() - 1).trim();
+                }
+            }
             addToLibrary(path);
+            // 添加到历史记录
+            pathHistory.add(path);
+            pathHistoryIndex = -1;
+            pathHistoryDraft = null;
+        }
+    }
+
+    /** 删除确认流程：覆盖底部栏为确认提示，Enter 确认删除，ESC 取消 */
+    private void confirmDeleteFlow() throws IOException {
+        if (library.isEmpty() || librarySelected < 0 || librarySelected >= library.size()) {
+            return;
+        }
+        String title = library.get(librarySelected).getTitle();
+
+        // 重绘书架画面并覆盖底部栏为红色确认提示
+        screen.drawLibraryScreen(library, librarySelected, libraryMessage, libraryMessageIsError);
+        screen.drawDeleteConfirmBar(title);
+
+        while (true) {
+            int key = readKey();
+            if (key == Key.CTRL_C) { running = false; return; }
+            if (key == Key.ENTER) {
+                library.remove(librarySelected);
+                if (librarySelected >= library.size()) librarySelected = Math.max(0, library.size() - 1);
+                storage.saveLibrary(library);
+                libraryMessage = "已删除: 《" + title + "》";
+                libraryMessageIsError = false;
+                return;
+            }
+            if (key == Key.ESC) {
+                return;
+            }
+            // 其他按键忽略
         }
     }
 
@@ -330,24 +458,36 @@ public class TerminalUI {
 
     private void addToLibrary(String filePath) {
         File file = new File(filePath);
-        if (!file.exists() || !file.isFile()) return;
+        if (!file.exists() || !file.isFile()) {
+            libraryMessage = "文件不存在: " + filePath;
+            libraryMessageIsError = true;
+            return;
+        }
 
         String canonical;
         try { canonical = file.getCanonicalPath(); }
         catch (IOException e) { canonical = file.getAbsolutePath(); }
 
         for (LibraryEntry e : library) {
-            if (e.getPath().equalsIgnoreCase(canonical)) return;
+            if (e.getPath().equalsIgnoreCase(canonical)) {
+                libraryMessage = "该书籍已在书架中";
+                libraryMessageIsError = true;
+                return;
+            }
         }
 
         try {
             EpubParser parser = new EpubParser();
             Book book = parser.parse(filePath);
             library.add(new LibraryEntry(canonical, book.getTitle(), book.getAuthor()));
+            libraryMessage = "已添加: 《" + book.getTitle() + "》";
+            libraryMessageIsError = false;
         } catch (Exception e) {
             String name = file.getName();
             if (name.toLowerCase().endsWith(".epub")) name = name.substring(0, name.length() - 5);
             library.add(new LibraryEntry(canonical, name, "未知作者"));
+            libraryMessage = "已添加: " + name + "（无法解析元数据）";
+            libraryMessageIsError = false;
         }
         storage.saveLibrary(library);
         librarySelected = library.size() - 1;
@@ -370,13 +510,18 @@ public class TerminalUI {
     // ==================== 输入 ====================
 
     /**
-     * 命令模式行输入：支持字符回显、Backspace、ESC 返回书架。
+     * 命令模式行输入：支持光标移动、历史记录、Tab 命令补全。
      * 返回 null 表示用户按了 ESC。
      */
     private String readCommandLine() throws IOException {
         StringBuilder sb = new StringBuilder();
+        int cursorPos = 0;
+
         while (true) {
-            int c = readKeyRaw();
+            String completion = getCommandCompletion(sb.toString());
+            screen.redrawCommandLine(sb.toString(), cursorPos, completion);
+
+            int c = readKeyInput();
             if (c == Key.CTRL_C) { running = false; return ""; }
             if (c == Key.ENTER) {
                 write("\r\n");
@@ -384,24 +529,95 @@ public class TerminalUI {
                 break;
             }
             if (c == Key.ESC) {
-                // 在命令模式下 ESC = 返回书架
                 return null;
             }
+
             if (c == Key.BACKSPACE) {
-                if (sb.length() > 0) {
-                    sb.deleteCharAt(sb.length() - 1);
-                    write("\b \b");
-                    flush();
+                if (cursorPos > 0) {
+                    sb.deleteCharAt(cursorPos - 1);
+                    cursorPos--;
                 }
                 continue;
             }
+
+            if (c == Key.DELETE) {
+                if (cursorPos < sb.length()) {
+                    sb.deleteCharAt(cursorPos);
+                }
+                continue;
+            }
+
+            if (c == Key.LEFT) {
+                if (cursorPos > 0) cursorPos--;
+                continue;
+            }
+
+            if (c == Key.RIGHT) {
+                if (cursorPos < sb.length()) cursorPos++;
+                continue;
+            }
+
+            if (c == Key.HOME) {
+                cursorPos = 0;
+                continue;
+            }
+
+            if (c == Key.END) {
+                cursorPos = sb.length();
+                continue;
+            }
+
+            if (c == Key.UP) {
+                if (!commandHistory.isEmpty()) {
+                    if (commandHistoryIndex == -1) {
+                        commandHistoryDraft = sb.toString();
+                        commandHistoryIndex = commandHistory.size() - 1;
+                    } else if (commandHistoryIndex > 0) {
+                        commandHistoryIndex--;
+                    }
+                    sb = new StringBuilder(commandHistory.get(commandHistoryIndex));
+                    cursorPos = sb.length();
+                }
+                continue;
+            }
+
+            if (c == Key.DOWN) {
+                if (commandHistoryIndex != -1) {
+                    if (commandHistoryIndex < commandHistory.size() - 1) {
+                        commandHistoryIndex++;
+                        sb = new StringBuilder(commandHistory.get(commandHistoryIndex));
+                    } else {
+                        commandHistoryIndex = -1;
+                        sb = new StringBuilder(commandHistoryDraft != null ? commandHistoryDraft : "");
+                        commandHistoryDraft = null;
+                    }
+                    cursorPos = sb.length();
+                }
+                continue;
+            }
+
+            if (c == Key.TAB) {
+                String comp = getCommandCompletion(sb.toString());
+                if (comp != null) {
+                    sb.append(comp);
+                    cursorPos = sb.length();
+                }
+                continue;
+            }
+
             if (c >= 32) {
-                sb.append((char) c);
-                write(String.valueOf((char) c));
-                flush();
+                sb.insert(cursorPos, (char) c);
+                cursorPos++;
             }
         }
-        return sb.toString().trim();
+
+        String result = sb.toString().trim();
+        if (!result.isEmpty()) {
+            commandHistory.add(result);
+            commandHistoryIndex = -1;
+            commandHistoryDraft = null;
+        }
+        return result;
     }
 
     /** 等待任意键（方向键等被忽略，仅等待有效按键或 ESC/Ctrl+C） */
@@ -460,6 +676,48 @@ public class TerminalUI {
     }
 
     /**
+     * 增强输入按键：返回方向键、Home/End/Delete，不吞掉。
+     * ESC 仍返回 Key.ESC（带短暂轮询延迟以区分方向键序列）。
+     */
+    private int readKeyInput() throws IOException {
+        int c = readOneChar();
+        if (c == 9) return Key.TAB;
+        if (c != 27) return classifyKey(c);
+
+        int second = pollChar(300);
+        if (second == '[') {
+            int third = pollChar(200);
+            switch (third) {
+                case 'A': return Key.UP;
+                case 'B': return Key.DOWN;
+                case 'C': return Key.RIGHT;
+                case 'D': return Key.LEFT;
+                case 'H': return Key.HOME;
+                case 'F': return Key.END;
+                case '3': {   // Delete: ESC [ 3 ~
+                    int fourth = pollChar(100);
+                    if (fourth == '~') return Key.DELETE;
+                    return Key.UNKNOWN;
+                }
+                default:  return Key.UNKNOWN;
+            }
+        }
+        if (second == 'O') {
+            int third = pollChar(200);
+            switch (third) {
+                case 'A': return Key.UP;
+                case 'B': return Key.DOWN;
+                case 'C': return Key.RIGHT;
+                case 'D': return Key.LEFT;
+                case 'H': return Key.HOME;
+                case 'F': return Key.END;
+                default:  return Key.UNKNOWN;
+            }
+        }
+        return Key.ESC;
+    }
+
+    /**
      * 轮询读取：在 timeoutMs 内反复尝试读取一个字符，超时返回 -1。
      * 每次尝试用很短的超时（最多 30ms），确保整体延迟不超过 timeoutMs。
      */
@@ -505,6 +763,147 @@ public class TerminalUI {
     private void write(String s) { writer.write(s); }
     private void flush() { writer.flush(); }
 
+    // ==================== 路径/命令补全 ====================
+
+    /** 获取路径 Tab 补全建议：返回当前输入的最佳补全后缀，无补全时返回 null */
+    private String getPathCompletion(String partial) {
+        if (partial.isEmpty()) return null;
+
+        // Windows 盘符处理：如 "D:" → 补全 "\"
+        if (partial.matches("[a-zA-Z]:")) {
+            return File.separator;
+        }
+
+        File file = new File(partial);
+        String parentPath = file.getParent();
+        String prefix = file.getName();
+
+        if (parentPath == null) {
+            if (partial.endsWith(File.separator)) {
+                parentPath = partial;
+                prefix = "";
+            } else {
+                parentPath = ".";
+                prefix = partial;
+            }
+        }
+
+        File parentDir = new File(parentPath);
+        if (!parentDir.isDirectory()) return null;
+
+        // prefix 为空（刚打完分隔符），不做补全
+        if (prefix.isEmpty()) return null;
+
+        final String matchPrefix = prefix.toLowerCase();
+        File[] children = parentDir.listFiles(
+                (dir, name) -> name.toLowerCase().startsWith(matchPrefix));
+        if (children == null || children.length == 0) return null;
+
+        // 找最长公共前缀
+        String commonPrefix = children[0].getName();
+        for (int i = 1; i < children.length; i++) {
+            commonPrefix = longestCommonPrefix(commonPrefix, children[i].getName());
+        }
+
+        if (commonPrefix.length() <= prefix.length()) {
+            // 没有更多公共前缀，但如果只有一个匹配且是目录则补分隔符
+            if (children.length == 1 && children[0].isDirectory()) {
+                return File.separator;
+            }
+            return null;
+        }
+
+        String completion = commonPrefix.substring(prefix.length());
+        if (children.length == 1 && children[0].isDirectory()) {
+            completion += File.separator;
+        }
+        return completion;
+    }
+
+    /** 获取命令 Tab 补全建议 */
+    private String getCommandCompletion(String partial) {
+        if (partial.isEmpty()) return null;
+
+        String[] commands = {"/read", "/toc", "/goto", "/progress", "/info", "/help", "/back"};
+        String match = null;
+        for (String cmd : commands) {
+            if (cmd.startsWith(partial)) {
+                if (match == null) {
+                    match = cmd;
+                } else {
+                    match = longestCommonPrefix(match, cmd);
+                }
+            }
+        }
+        if (match != null && match.length() > partial.length()) {
+            return match.substring(partial.length());
+        }
+        return null;
+    }
+
+    private static String longestCommonPrefix(String a, String b) {
+        int minLen = Math.min(a.length(), b.length());
+        for (int i = 0; i < minLen; i++) {
+            if (a.charAt(i) != b.charAt(i)) return a.substring(0, i);
+        }
+        return a.substring(0, minLen);
+    }
+
+    // ==================== 自动扫描 books 目录 ====================
+
+    /** 扫描 books/ 目录下的 EPUB 文件，按全路径去重后自动添加到书架 */
+    private void scanBooksDirectory() {
+        // 尝试多个可能的 books 目录位置
+        String[] candidates = {"books", "../books"};
+        File booksDir = null;
+        for (String candidate : candidates) {
+            File dir = new File(candidate);
+            if (dir.isDirectory()) {
+                booksDir = dir;
+                break;
+            }
+        }
+        if (booksDir == null) return;
+
+        File[] epubFiles = booksDir.listFiles(
+                (dir, name) -> name.toLowerCase().endsWith(".epub"));
+        if (epubFiles == null || epubFiles.length == 0) return;
+
+        int addedCount = 0;
+        for (File f : epubFiles) {
+            try {
+                String canonical = f.getCanonicalPath();
+                // 按全路径检查是否已在书架中
+                boolean exists = false;
+                for (LibraryEntry e : library) {
+                    if (e.getPath().equalsIgnoreCase(canonical)) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (exists) continue;
+
+                try {
+                    EpubParser parser = new EpubParser();
+                    Book book = parser.parse(canonical);
+                    library.add(new LibraryEntry(canonical, book.getTitle(), book.getAuthor()));
+                } catch (Exception ex) {
+                    String name = f.getName();
+                    if (name.toLowerCase().endsWith(".epub")) name = name.substring(0, name.length() - 5);
+                    library.add(new LibraryEntry(canonical, name, "未知作者"));
+                }
+                addedCount++;
+            } catch (IOException ignored) {
+                // 跳过无法读取的文件
+            }
+        }
+
+        if (addedCount > 0) {
+            storage.saveLibrary(library);
+            librarySelected = library.size() - addedCount;  // 选中第一本新添加的
+        }
+    }
+
     /**
      * 语义化按键常量。
      */
@@ -518,5 +917,9 @@ public class TerminalUI {
         static final int RIGHT    = -22;
         static final int LEFT     = -23;
         static final int UNKNOWN  = -99;
+        static final int TAB      = 9;
+        static final int HOME     = -24;
+        static final int END      = -25;
+        static final int DELETE   = -26;
     }
 }
