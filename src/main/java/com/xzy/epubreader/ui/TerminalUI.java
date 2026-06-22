@@ -292,12 +292,16 @@ public class TerminalUI {
 
     private void openBook(String filePath) {
         File file = new File(filePath);
-        if (!file.exists()) return;
+        if (!file.exists()) {
+            // 文件不存在 —— 路径可能已失效，静默跳过
+            return;
+        }
         try {
-            screen.drawLoadingScreen(filePath);
+            // 标准化路径（解析 ../ 和符号链接）
+            currentBookPath = file.getCanonicalPath();
+            screen.drawLoadingScreen(currentBookPath);
             EpubParser parser = new EpubParser();
-            currentBook = parser.parse(filePath);
-            currentBookPath = filePath;
+            currentBook = parser.parse(currentBookPath);
             commandHandler = new CommandHandler(currentBook);
 
             int[] progress = storage.loadProgress(filePath);
@@ -328,28 +332,33 @@ public class TerminalUI {
         File file = new File(filePath);
         if (!file.exists() || !file.isFile()) return;
 
-        String absPath = file.getAbsolutePath();
+        String canonical;
+        try { canonical = file.getCanonicalPath(); }
+        catch (IOException e) { canonical = file.getAbsolutePath(); }
+
         for (LibraryEntry e : library) {
-            if (e.getPath().equalsIgnoreCase(absPath)) return;
+            if (e.getPath().equalsIgnoreCase(canonical)) return;
         }
 
         try {
             EpubParser parser = new EpubParser();
             Book book = parser.parse(filePath);
-            library.add(new LibraryEntry(absPath, book.getTitle(), book.getAuthor()));
+            library.add(new LibraryEntry(canonical, book.getTitle(), book.getAuthor()));
         } catch (Exception e) {
             String name = file.getName();
             if (name.toLowerCase().endsWith(".epub")) name = name.substring(0, name.length() - 5);
-            library.add(new LibraryEntry(absPath, name, "未知作者"));
+            library.add(new LibraryEntry(canonical, name, "未知作者"));
         }
         storage.saveLibrary(library);
         librarySelected = library.size() - 1;
     }
 
     private void updateLibraryEntry(String filePath, String title, String author) {
-        String absPath = new File(filePath).getAbsolutePath();
+        String canonical;
+        try { canonical = new File(filePath).getCanonicalPath(); }
+        catch (IOException e) { canonical = new File(filePath).getAbsolutePath(); }
         for (LibraryEntry e : library) {
-            if (e.getPath().equalsIgnoreCase(absPath)) {
+            if (e.getPath().equalsIgnoreCase(canonical)) {
                 e.setTitle(title);
                 e.setAuthor(author);
                 storage.saveLibrary(library);

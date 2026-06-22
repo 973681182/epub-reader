@@ -159,18 +159,14 @@ public class StorageManager {
     /**
      * 用双引号包裹字符串并转义特殊字符。
      */
+    /** 把字符串编码为 JSON 字符串值（只转义 \ 和 "，不转义控制字符以避免与 Windows 路径冲突） */
     private static String jsonString(String s) {
         if (s == null) return "\"\"";
         StringBuilder sb = new StringBuilder("\"");
         for (char c : s.toCharArray()) {
-            switch (c) {
-                case '"':  sb.append("\\\""); break;
-                case '\\': sb.append("\\\\"); break;
-                case '\n': sb.append("\\n"); break;
-                case '\r': sb.append("\\r"); break;
-                case '\t': sb.append("\\t"); break;
-                default:   sb.append(c);
-            }
+            if (c == '\\') sb.append("\\\\");
+            else if (c == '"') sb.append("\\\"");
+            else sb.append(c);
         }
         sb.append('"');
         return sb.toString();
@@ -216,9 +212,8 @@ public class StorageManager {
 
         if (endQuote >= json.length()) return null;
         String value = json.substring(startQuote + 1, endQuote);
-        // 反转义
-        return value.replace("\\\"", "\"").replace("\\\\", "\\")
-                .replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t");
+        // 反转义：先还原 \"，再还原 \\
+        return value.replace("\\\"", "\"").replace("\\\\", "\\");
     }
 
     /**

@@ -124,6 +124,69 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- 构建后复制到 dist/ 目录 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <mkdir dir="dist"/>
+                                <mkdir dir="dist/logs"/>
+                                <mkdir dir="dist/books"/>
+                                <copy file="target/epub-reader-1.0-SNAPSHOT-jar-with-dependencies.jar"
+                                      tofile="dist/epub-reader.jar" overwrite="true"/>
+                                <copy todir="dist" overwrite="true">
+                                    <fileset dir="src/main/launcher" erroronmissingdir="false"/>
+                                </copy>
+                                <echo message="Distribution ready in dist/"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- launch4j 需要 windres.exe（MinGW），不可用时请用 .bat/.vbs 启动 -->
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>exe</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.akathist.maven.plugins.launch4j</groupId>
+                        <artifactId>launch4j-maven-plugin</artifactId>
+                        <version>2.5.3</version>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals><goal>launch4j</goal></goals>
+                                <configuration>
+                                    <headerType>console</headerType>
+                                    <jar>dist/epub-reader.jar</jar>
+                                    <outfile>dist/epub-reader.exe</outfile>
+                                    <dontWrapJar>true</dontWrapJar>
+                                    <classPath>
+                                        <mainClass>com.xzy.epubreader.App</mainClass>
+                                    </classPath>
+                                    <jre>
+                                        <minVersion>11</minVersion>
+                                        <opts>
+                                            <opt>-Dfile.encoding=UTF-8</opt>
+                                            <opt>-Xmx512m</opt>
+                                        </opts>
+                                    </jre>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
