@@ -3,11 +3,14 @@ package com.xzy.epubreader.storage;
 import com.xzy.epubreader.model.LibraryEntry;
 
 import java.io.IOException;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.security.CodeSource;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -16,9 +19,14 @@ import java.util.List;
 /**
  * 存储管理器：书架 + 阅读进度持久化。
  *
- * ~/.epub-reader/
+ * 数据目录优先级：
+ *   1. 如果 JAR 位于某个 dist/ 目录内 → dist/.epub-reader/
+ *   2. 如果当前工作目录下存在 dist/ 目录 → dist/.epub-reader/
+ *   3. 否则 → ~/.epub-reader/ (默认)
+ *
+ * 数据目录结构：
  *   library.json        书架列表
- *   progress/            每本书一个进度文件（文件名=路径的 hashCode）
+ *   progress/            每本书一个进度文件
  */
 public class StorageManager {
 
@@ -27,10 +35,64 @@ public class StorageManager {
     private final Path progressDir;
 
     public StorageManager() {
-        String userHome = System.getProperty("user.home", ".");
-        this.dataDir = Paths.get(userHome, ".epub-reader");
+        this.dataDir = resolveDataDir();
         this.libraryFile = dataDir.resolve("library.json");
         this.progressDir = dataDir.resolve("progress");
+    }
+
+    /**
+     * 按优先级确定数据存储目录。
+     * 优先使用 dist/ 目录（如果 JAR 运行在 dist 环境），否则回退到用户目录。
+     */
+    private static Path resolveDataDir() {
+        // 1. 尝试从 JAR 位置推断
+        Path jarDir = getJarDirectory();
+        if (jarDir != null) {
+            // JAR 自身就在 dist/ 下，例如 dist/epub-reader.jar
+            if (jarDir.getFileName() != null && "dist".equals(jarDir.getFileName().toString())) {
+                Path dataDir = jarDir.resolve(".epub-reader");
+                if (Files.isDirectory(dataDir) || jarDir.toFile().canWrite()) {
+                    return dataDir;
+                }
+            }
+            // JAR 所在目录存在 dist/ 子目录
+            Path siblingDist = jarDir.resolve("dist");
+            if (Files.isDirectory(siblingDist)) {
+                Path dataDir = siblingDist.resolve(".epub-reader");
+                return dataDir;
+            }
+        }
+
+        // 2. 尝试当前工作目录下的 dist/
+        Path cwdDist = Paths.get("dist");
+        if (Files.isDirectory(cwdDist)) {
+            return cwdDist.resolve(".epub-reader").toAbsolutePath();
+        }
+
+        // 3. 回退到用户目录
+        String userHome = System.getProperty("user.home", ".");
+        return Paths.get(userHome, ".epub-reader");
+    }
+
+    /**
+     * 获取 JAR 文件所在的目录，如果无法确定（例如从 IDE 直接运行）则返回 null。
+     */
+    private static Path getJarDirectory() {
+        try {
+            CodeSource codeSource = StorageManager.class.getProtectionDomain().getCodeSource();
+            if (codeSource == null) return null;
+            URL location = codeSource.getLocation();
+            if (location == null) return null;
+            Path jarPath = Paths.get(location.toURI());
+            // 确保是文件（JAR），不是 target/classes 这种目录
+            if (Files.isRegularFile(jarPath)) {
+                Path parent = jarPath.getParent();
+                if (parent != null) return parent.toAbsolutePath();
+            }
+        } catch (URISyntaxException e) {
+            // 无法确定，忽略
+        }
+        return null;
     }
 
     public void init() throws IOException {

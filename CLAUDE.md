@@ -27,7 +27,7 @@ com.xzy.epubreader
 ├── renderer/
 │   └── PageRenderer.java         按终端宽高分页，CJK 字符宽度=2
 ├── storage/
-│   └── StorageManager.java       持久化：library.json(书架) + progress/目录(每书一个文件)
+│   └── StorageManager.java       持久化：优先级选择数据目录(详见下方)，library.json + progress/
 └── ui/
     ├── TerminalUI.java           主控制器：三模式循环 + 按键处理 + 交替屏幕
     ├── ScreenRenderer.java       ANSI 屏幕绘制：书架/命令/阅读三种画面 + 命令条
@@ -55,13 +55,19 @@ LIBRARY(书架) ←→ COMMAND(命令) ←→ READING(阅读)
 - 启动：`\033[?1049h` → 进入交替屏幕（无回滚历史）
 - 退出：`\033[?1049l` → 恢复主屏幕
 
+### 数据目录优先级
+- StorageManager 按以下优先级选择数据目录：
+  1. JAR 位于 `dist/` 目录内 → `dist/.epub-reader/`
+  2. 当前工作目录存在 `dist/` 子目录 → `<cwd>/dist/.epub-reader/`
+  3. 回退 → `~/.epub-reader/`
+
 ### 进度持久化
-- 每本书单独文件：`~/.epub-reader/progress/<路径转安全文件名>.txt`
+- 每本书单独文件：`<数据目录>/progress/<路径转安全文件名>.txt`
 - 格式：`章节索引,页码`（例如 `3,12`），约 10 字节
 - 翻页时自动保存，不累积数据
 
 ### 书架持久化
-- `~/.epub-reader/library.json`，手动 JSON 序列化
+- `<数据目录>/library.json`，手动 JSON 序列化
 - 只用 `\` 和 `"` 转义，不用 `\n` `\r` `\t`（避免与 Windows 路径 `\new`、`\test` 冲突）
 
 ### 编码
