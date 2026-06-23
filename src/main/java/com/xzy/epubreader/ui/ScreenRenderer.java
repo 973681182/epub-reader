@@ -210,34 +210,22 @@ public class ScreenRenderer {
         row++;
 
         drawLine(row++, bold("  阅读模式命令:"));
-        String[][] commands = {
-                {"/read", "进入阅读模式，从上次位置继续"},
-                {"/read <n>", "进入阅读模式，从第 n 章开始"},
-                {"/toc", "显示章节目录"},
-                {"/goto <n>", "跳转到全局第 n 页"},
-                {"/goto <n>%", "跳转到指定百分比位置"},
-                {"/progress", "显示详细阅读进度"},
-                {"/info", "显示书籍元信息"},
-                {"/back", "返回书架"},
-        };
-
-        for (String[] cmd : commands) {
-            if (row >= terminalHeight - 4) break;
-            drawLine(row++, String.format("  %-14s %s", cyan(cmd[0]), dim(cmd[1])));
+        for (Command cmd : Command.values()) {
+            if (!cmd.isAvailableIn(Mode.READING)) {
+                continue;
+            }
+            if (row >= terminalHeight - 10) break;
+            drawLine(row++, String.format("  %-14s %s", cyan(cmd.getName()), dim(cmd.getDescription())));
         }
 
         row++;
         drawLine(row++, bold("  书架模式命令:"));
-        String[][] libCommands = {
-                {"/read <n>", "打开书架中第 n 本书"},
-                {"/add", "添加 EPUB 文件到书架"},
-                {"/quit", "退出程序"},
-                {"/help", "显示本帮助"},
-        };
-
-        for (String[] cmd : libCommands) {
+        for (Command cmd : Command.values()) {
+            if (!cmd.isAvailableIn(Mode.LIBRARY)) {
+                continue;
+            }
             if (row >= terminalHeight - 3) break;
-            drawLine(row++, String.format("  %-14s %s", cyan(cmd[0]), dim(cmd[1])));
+            drawLine(row++, String.format("  %-14s %s", cyan(cmd.getName()), dim(cmd.getDescription())));
         }
 
         row++;
@@ -378,6 +366,99 @@ public class ScreenRenderer {
         } else {
             write(dim("[/]命令"));
         }
+    }
+
+    /**
+     * 绘制展开的命令输入区域（命令激活时），可显示匹配命令列表。
+     * <p>
+     * 当 commands 为空或 length=0 时只显示最小面板（4 行）；
+     * 有匹配命令时面板向上扩展，每多一条命令多占一行，最多显示 5 条。
+     * 书籍内容区域不变，被覆盖的部分直接遮挡。
+     *
+     * @param input        用户已输入的文本
+     * @param cursorPos    光标在输入中的位置
+     * @param completion   补全建议（灰色显示在输入末尾）
+     * @param commands     匹配的命令数组 [{name, desc}, ...]，最多 5 条
+     * @param selectedIndex 当前选中的命令索引，-1 表示无选中
+     * @param bottomHint   底部提示文本（如 "ESC 退出命令…" 或错误消息），null 则不显示
+     */
+    public void drawExpandedCommandAreaWithHints(String input, int cursorPos, String completion,
+                                                  String[][] commands, int selectedIndex,
+                                                  String bottomHint) {
+        String border = dim(repeat("─", terminalWidth));
+        int cmdCount = (commands != null) ? Math.min(commands.length, 5) : 0;
+
+        // 面板行号计算
+        // cmdCount>0: 上边框 + 输入 + 分隔 + N条命令 + 下边框 (+ 底部提示)
+        // cmdCount=0: 上边框 + 输入 + 下边框 (+ 底部提示)
+        int panelTop, inputRow, sepRow, cmdStart;
+        if (cmdCount > 0) {
+            panelTop = terminalHeight - (4 + cmdCount);  // e.g. N=5 → H-9
+            inputRow = terminalHeight - (3 + cmdCount);  // e.g. N=5 → H-8
+            sepRow   = terminalHeight - (2 + cmdCount);  // e.g. N=5 → H-7
+            cmdStart = terminalHeight - (1 + cmdCount);  // e.g. N=5 → H-6  ..last cmd at H-2
+        } else {
+            panelTop = terminalHeight - 3;  // H-3
+            inputRow = terminalHeight - 2;  // H-2
+            sepRow   = 0;                   // unused
+            cmdStart = 0;                   // unused
+        }
+        int bottomBorder = terminalHeight - 1;  // H-1
+        int hintRow = terminalHeight;           // H
+
+        // 上边框
+        moveCursorTo(panelTop, 1);
+        write(border);
+
+        // 命令输入行
+        moveCursorTo(inputRow, 1);
+        write("\033[K");
+        write(CYAN + "> " + RESET);
+        write(input);
+        if (completion != null && !completion.isEmpty()) {
+            write(hint(completion));
+        }
+
+        if (cmdCount > 0) {
+            // 分隔线
+            moveCursorTo(sepRow, 1);
+            write(border);
+
+            // 列出匹配命令
+            for (int i = 0; i < cmdCount; i++) {
+                int row = cmdStart + i;
+                moveCursorTo(row, 1);
+                write("\033[K");
+                String name = commands[i][0];
+                String desc = commands[i][1];
+                String line;
+                if (i == selectedIndex) {
+                    // 选中行：反色高亮
+                    line = REVERSE + "  " + padRight(name, 14) + " " + desc;
+                    line = padRightVisual(line, terminalWidth);
+                    line = line + RESET;
+                } else {
+                    line = "  " + dim(padRight(name, 14)) + " " + dim(desc);
+                    line = padRightVisual(line, terminalWidth);
+                }
+                write(line);
+            }
+        }
+
+        // 下边框
+        moveCursorTo(bottomBorder, 1);
+        write(border);
+
+        // 底部提示
+        moveCursorTo(hintRow, 1);
+        write("\033[K");
+        if (bottomHint != null && !bottomHint.isEmpty()) {
+            write(dim("  " + bottomHint));
+        }
+
+        // 光标定位到输入位置
+        moveCursorTo(inputRow, 3 + cursorPos);
+        flush();
     }
 
     /** 在命令面板内显示临时消息（用于命令错误提示等），等待按键后由调用方清除 */

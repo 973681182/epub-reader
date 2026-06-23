@@ -13,7 +13,6 @@ public class CommandHandler {
     private final Book book;
 
     // 命令匹配模式
-    private static final Pattern CMD_READ = Pattern.compile("^/read\\s*(\\d*)$");
     private static final Pattern CMD_GOTO_PAGE = Pattern.compile("^/goto\\s+(\\d+)$");
     private static final Pattern CMD_GOTO_PCT = Pattern.compile("^/goto\\s+(\\d+(?:\\.\\d+)?)\\s*%$");
 
@@ -32,9 +31,10 @@ public class CommandHandler {
      * 处理用户输入的命令。不以 / 开头的输入会被忽略（返回 NONE）。
      *
      * @param input 用户输入的原始文本
+     * @param mode  当前运行模式
      * @return 命令执行结果类型
      */
-    public CommandResult handle(String input) {
+    public CommandResult handle(String input, Mode mode) {
         if (input == null || input.isBlank()) {
             return CommandResult.NONE;
         }
@@ -47,43 +47,50 @@ public class CommandHandler {
             return CommandResult.NONE;
         }
 
+        // 解析命令（按当前模式匹配）
+        Command cmd = Command.parse(trimmed, mode);
+        if (cmd == null) {
+            String cmdName = trimmed.split("\\s+", 2)[0].toLowerCase();
+            lastMessage = "未知命令: " + cmdName + "。输入 /help 查看可用命令";
+            return CommandResult.NONE;
+        }
+
         // 按空格分割命令和参数
         String[] parts = trimmed.split("\\s+", 2);
-        String command = parts[0].toLowerCase();
 
-        switch (command) {
-            case "/read":
+        switch (cmd) {
+            case READ:
                 return handleRead(parts.length > 1 ? parts[1] : "");
 
-            case "/toc":
+            case TOC:
                 lastMessage = "共 " + book.getChapterCount() + " 章";
                 return CommandResult.SHOW_TOC;
 
-            case "/goto":
+            case GOTO:
                 return handleGoto(parts.length > 1 ? parts[1] : "");
 
-            case "/progress":
+            case PROGRESS:
                 lastMessage = buildProgressMessage();
                 return CommandResult.SHOW_PROGRESS;
 
-            case "/info":
+            case INFO:
                 lastMessage = buildInfoMessage();
                 return CommandResult.SHOW_INFO;
 
-            case "/help":
+            case HELP:
                 return CommandResult.SHOW_HELP;
 
-            case "/back":
+            case BACK:
                 lastMessage = "返回书架";
                 return CommandResult.BACK_TO_LIBRARY;
 
-            case "/quit":
-            case "/exit":
+            case QUIT:
+            case EXIT:
                 lastMessage = "返回书架";
                 return CommandResult.BACK_TO_LIBRARY;
 
             default:
-                lastMessage = "未知命令: " + command + "。输入 /help 查看可用命令";
+                lastMessage = "该命令在当前模式下不可用: " + cmd.getName();
                 return CommandResult.NONE;
         }
     }

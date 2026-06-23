@@ -20,12 +20,6 @@ import java.util.List;
  */
 public class TerminalUI {
 
-    private enum Mode {
-        LIBRARY,
-        COMMAND,
-        READING
-    }
-
     private final StorageManager storage;
     private final PageRenderer pageRenderer;
 
@@ -138,6 +132,8 @@ public class TerminalUI {
         boolean cmdActive = false;
         StringBuilder cmdInput = new StringBuilder();
         int cmdCursor = 0;
+        int selectedCmdIndex = 0;
+        String cmdErrorMessage = null;
 
         while (mode == Mode.LIBRARY && running) {
             updateTerminalSize();
@@ -151,9 +147,26 @@ public class TerminalUI {
             screen.drawLibraryScreen(library, librarySelected, msg, msgErr);
 
             if (cmdActive) {
-                // 用命令行输入覆盖底部命令提示行
-                String completion = getCommandCompletion(cmdInput.toString());
-                screen.redrawCommandLine(cmdInput.toString(), cmdCursor, completion);
+                // 展开式命令输入区域，匹配命令列表 + 选中高亮
+                String[][] matches = matchCommands(cmdInput.toString());
+                String bottomHint;
+                if (cmdErrorMessage != null) {
+                    bottomHint = cmdErrorMessage;
+                } else if (matches.length > 0) {
+                    bottomHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
+                } else {
+                    bottomHint = "ESC 退出命令模式";
+                }
+                String completion = null;
+                if (matches.length > 0) {
+                    int compIdx = matches.length == 1 ? 0 : selectedCmdIndex;
+                    if (compIdx >= 0 && compIdx < matches.length) {
+                        completion = getCompletionSuffix(cmdInput.toString(), matches[compIdx][0]);
+                    }
+                }
+                screen.drawExpandedCommandAreaWithHints(
+                        cmdInput.toString(), cmdCursor, completion,
+                        matches, selectedCmdIndex, bottomHint);
             }
 
             // 命令模式下用完整的输入按键处理，否则用简化的按键读取
@@ -167,25 +180,57 @@ public class TerminalUI {
                     cmdActive = false;
                     cmdInput.setLength(0);
                     cmdCursor = 0;
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
                     commandHistoryIndex = -1;
                     commandHistoryDraft = null;
                     continue;
                 }
 
                 if (key == Key.ENTER) {
+                    // 如果有匹配命令且有选中项，先用选中的命令补全输入
+                    String[][] enterMatches = matchCommands(cmdInput.toString());
+                    if (enterMatches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < enterMatches.length) {
+                        cmdInput = new StringBuilder(enterMatches[selectedCmdIndex][0] + " ");
+                        cmdCursor = cmdInput.length();
+                    }
+
                     // 执行命令
                     String cmd = cmdInput.toString().trim();
-                    cmdInput.setLength(0);
-                    cmdCursor = 0;
-                    cmdActive = false;
                     commandHistoryIndex = -1;
                     commandHistoryDraft = null;
 
-                    if (!cmd.isEmpty()) {
-                        commandHistory.add(cmd);
-                        handleLibraryCommand(cmd);
-                        if (!running || mode != Mode.LIBRARY) return;
+                    if (cmd.isEmpty()) {
+                        // 空命令：退出命令模式
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        cmdActive = false;
+                        selectedCmdIndex = 0;
+                        cmdErrorMessage = null;
+                        continue;
                     }
+
+                    commandHistory.add(cmd);
+                    handleLibraryCommand(cmd);
+                    // handleLibraryCommand 内部设置 libraryMessage；错误信息已通过该机制处理
+                    // 如果还在书架模式，退出命令模式
+                    if (mode == Mode.LIBRARY) {
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        // 根据是否有错误消息决定是否保持命令模式
+                        if (libraryMessage != null && libraryMessageIsError) {
+                            cmdErrorMessage = libraryMessage;
+                            libraryMessage = null;
+                            libraryMessageIsError = false;
+                            selectedCmdIndex = 0;
+                            // cmdActive 保持 true
+                        } else {
+                            cmdActive = false;
+                            selectedCmdIndex = 0;
+                            cmdErrorMessage = null;
+                        }
+                    }
+                    if (!running || mode != Mode.LIBRARY) return;
                     continue;
                 }
 
@@ -220,7 +265,10 @@ public class TerminalUI {
                     continue;
                 }
                 if (key == Key.UP) {
-                    if (!commandHistory.isEmpty()) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0) {
+                        if (selectedCmdIndex > 0) selectedCmdIndex--;
+                    } else if (!commandHistory.isEmpty()) {
                         if (commandHistoryIndex == -1) {
                             commandHistoryDraft = cmdInput.toString();
                             commandHistoryIndex = commandHistory.size() - 1;
@@ -230,10 +278,14 @@ public class TerminalUI {
                         cmdInput = new StringBuilder(commandHistory.get(commandHistoryIndex));
                         cmdCursor = cmdInput.length();
                     }
+                    cmdErrorMessage = null;
                     continue;
                 }
                 if (key == Key.DOWN) {
-                    if (commandHistoryIndex != -1) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0) {
+                        if (selectedCmdIndex < matches.length - 1) selectedCmdIndex++;
+                    } else if (commandHistoryIndex != -1) {
                         if (commandHistoryIndex < commandHistory.size() - 1) {
                             commandHistoryIndex++;
                             cmdInput = new StringBuilder(commandHistory.get(commandHistoryIndex));
@@ -244,19 +296,23 @@ public class TerminalUI {
                         }
                         cmdCursor = cmdInput.length();
                     }
+                    cmdErrorMessage = null;
                     continue;
                 }
                 if (key == Key.TAB) {
-                    String comp = getCommandCompletion(cmdInput.toString());
-                    if (comp != null) {
-                        cmdInput.append(comp);
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < matches.length) {
+                        cmdInput = new StringBuilder(matches[selectedCmdIndex][0] + " ");
                         cmdCursor = cmdInput.length();
                     }
+                    cmdErrorMessage = null;
                     continue;
                 }
                 if (key >= 32) {
                     cmdInput.insert(cmdCursor, (char) key);
                     cmdCursor++;
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
                 }
                 continue;
             }
@@ -307,11 +363,20 @@ public class TerminalUI {
 
     /** 处理书架模式下的斜杠命令 */
     private void handleLibraryCommand(String input) throws IOException {
+        Command cmd = Command.parse(input, Mode.LIBRARY);
         String[] parts = input.trim().split("\\s+", 2);
-        String command = parts[0].toLowerCase();
 
-        switch (command) {
-            case "/read": {
+        if (cmd == null) {
+            String cmdName = parts[0].toLowerCase();
+            if (cmdName.startsWith("/")) {
+                libraryMessage = "未知命令: " + cmdName + "。输入 /help 查看可用命令";
+                libraryMessageIsError = true;
+            }
+            return;
+        }
+
+        switch (cmd) {
+            case READ_SHELF: {
                 if (library.isEmpty()) {
                     libraryMessage = "书架为空，请先添加书籍";
                     libraryMessageIsError = true;
@@ -341,22 +406,22 @@ public class TerminalUI {
                 return;
             }
 
-            case "/add":
+            case ADD:
                 addBookFlow();
                 return;
 
-            case "/help":
+            case HELP:
                 screen.drawHelpScreen();
                 waitForAnyKey();
                 return;
 
-            case "/quit":
-            case "/exit":
+            case QUIT:
+            case EXIT:
                 running = false;
                 return;
 
             default:
-                libraryMessage = "未知命令: " + command + "。输入 /help 查看可用命令";
+                libraryMessage = "该命令在当前模式下不可用: " + cmd.getName();
                 libraryMessageIsError = true;
         }
     }
@@ -515,7 +580,7 @@ public class TerminalUI {
                 return;
             }
 
-            CommandResult result = commandHandler.handle(line);
+            CommandResult result = commandHandler.handle(line, Mode.READING);
             switch (result) {
                 case ENTER_READING:
                     pageRenderer.reRender(currentBook, terminal.getWidth(), terminal.getHeight());
@@ -572,6 +637,8 @@ public class TerminalUI {
         boolean cmdActive = false;
         StringBuilder cmdInput = new StringBuilder();
         int cmdCursor = 0;
+        int selectedCmdIndex = 0;
+        String cmdErrorMessage = null;
 
         while (mode == Mode.READING && running) {
             updateTerminalSize();
@@ -580,9 +647,26 @@ public class TerminalUI {
             screen.drawReadingMode(currentBook);
 
             if (cmdActive) {
-                // 用命令行输入覆盖底部提示行
-                String completion = getCommandCompletion(cmdInput.toString());
-                screen.redrawCommandLine(cmdInput.toString(), cmdCursor, completion);
+                // 展开式命令输入区域，匹配命令列表 + 选中高亮
+                String[][] matches = matchCommands(cmdInput.toString());
+                String bottomHint;
+                if (cmdErrorMessage != null) {
+                    bottomHint = cmdErrorMessage;
+                } else if (matches.length > 0) {
+                    bottomHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
+                } else {
+                    bottomHint = "ESC 退出命令模式";
+                }
+                String completion = null;
+                if (matches.length > 0) {
+                    int compIdx = matches.length == 1 ? 0 : selectedCmdIndex;
+                    if (compIdx >= 0 && compIdx < matches.length) {
+                        completion = getCompletionSuffix(cmdInput.toString(), matches[compIdx][0]);
+                    }
+                }
+                screen.drawExpandedCommandAreaWithHints(
+                        cmdInput.toString(), cmdCursor, completion,
+                        matches, selectedCmdIndex, bottomHint);
             }
 
             // 命令模式下用完整的输入按键处理，否则用简化的按键读取
@@ -596,61 +680,86 @@ public class TerminalUI {
                     cmdActive = false;
                     cmdInput.setLength(0);
                     cmdCursor = 0;
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
                     commandHistoryIndex = -1;
                     commandHistoryDraft = null;
                     continue;
                 }
 
                 if (key == Key.ENTER) {
+                    // 如果有匹配命令且有选中项，先用选中的命令补全输入
+                    String[][] enterMatches = matchCommands(cmdInput.toString());
+                    if (enterMatches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < enterMatches.length) {
+                        cmdInput = new StringBuilder(enterMatches[selectedCmdIndex][0] + " ");
+                        cmdCursor = cmdInput.length();
+                    }
+
                     // 执行命令
                     String cmd = cmdInput.toString().trim();
-                    cmdInput.setLength(0);
-                    cmdCursor = 0;
-                    cmdActive = false;
                     commandHistoryIndex = -1;
                     commandHistoryDraft = null;
 
-                    if (!cmd.isEmpty()) {
-                        commandHistory.add(cmd);
+                    if (cmd.isEmpty()) {
+                        // 空命令：退出命令模式
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        cmdActive = false;
+                        selectedCmdIndex = 0;
+                        cmdErrorMessage = null;
+                        continue;
+                    }
 
-                        CommandResult result = commandHandler.handle(cmd);
-                        switch (result) {
-                            case SHOW_TOC:
-                                screen.drawTocScreen(currentBook);
-                                waitForAnyKey();
-                                break;
-                            case SHOW_PROGRESS:
-                                screen.drawProgressScreen(currentBook);
-                                waitForAnyKey();
-                                break;
-                            case SHOW_INFO:
-                                screen.drawInfoScreen(currentBook);
-                                waitForAnyKey();
-                                break;
-                            case SHOW_HELP:
-                                screen.drawHelpScreen();
-                                waitForAnyKey();
-                                break;
-                            case ENTER_READING:
-                                // /read 或 /goto 跳转 — 已在 handle 中更新位置，保存进度即可
-                                saveCurrentProgress();
-                                break;
-                            case BACK_TO_LIBRARY:
-                                saveCurrentProgress();
-                                currentBook = null;
-                                commandHandler = null;
-                                mode = Mode.LIBRARY;
-                                return;
-                            case NONE:
-                            default:
-                                // 显示错误/提示消息
-                                String msg = commandHandler.getLastMessage();
-                                if (msg != null && !msg.isEmpty()) {
-                                    screen.drawMessageBar(msg, true);
-                                    waitForAnyKey();
-                                }
-                                break;
-                        }
+                    commandHistory.add(cmd);
+
+                    CommandResult result = commandHandler.handle(cmd, Mode.READING);
+                    switch (result) {
+                        case SHOW_TOC:
+                            cmdInput.setLength(0); cmdCursor = 0; cmdActive = false;
+                            selectedCmdIndex = 0; cmdErrorMessage = null;
+                            screen.drawTocScreen(currentBook);
+                            waitForAnyKey();
+                            break;
+                        case SHOW_PROGRESS:
+                            cmdInput.setLength(0); cmdCursor = 0; cmdActive = false;
+                            selectedCmdIndex = 0; cmdErrorMessage = null;
+                            screen.drawProgressScreen(currentBook);
+                            waitForAnyKey();
+                            break;
+                        case SHOW_INFO:
+                            cmdInput.setLength(0); cmdCursor = 0; cmdActive = false;
+                            selectedCmdIndex = 0; cmdErrorMessage = null;
+                            screen.drawInfoScreen(currentBook);
+                            waitForAnyKey();
+                            break;
+                        case SHOW_HELP:
+                            cmdInput.setLength(0); cmdCursor = 0; cmdActive = false;
+                            selectedCmdIndex = 0; cmdErrorMessage = null;
+                            screen.drawHelpScreen();
+                            waitForAnyKey();
+                            break;
+                        case ENTER_READING:
+                            // /read 或 /goto 跳转 — 已在 handle 中更新位置，保存进度即可
+                            cmdInput.setLength(0); cmdCursor = 0; cmdActive = false;
+                            selectedCmdIndex = 0; cmdErrorMessage = null;
+                            saveCurrentProgress();
+                            break;
+                        case BACK_TO_LIBRARY:
+                            saveCurrentProgress();
+                            currentBook = null;
+                            commandHandler = null;
+                            mode = Mode.LIBRARY;
+                            return;
+                        case NONE:
+                        default:
+                            // 命令执行失败：保持在命令模式，显示错误消息
+                            String msg = commandHandler.getLastMessage();
+                            cmdErrorMessage = (msg != null && !msg.isEmpty()) ? msg : null;
+                            cmdInput.setLength(0);
+                            cmdCursor = 0;
+                            selectedCmdIndex = 0;
+                            // cmdActive 保持 true
+                            break;
                     }
                     continue;
                 }
@@ -686,8 +795,12 @@ public class TerminalUI {
                     continue;
                 }
                 if (key == Key.UP) {
-                    // 命令历史回溯
-                    if (!commandHistory.isEmpty()) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0) {
+                        // 有匹配命令：上下选择
+                        if (selectedCmdIndex > 0) selectedCmdIndex--;
+                    } else if (!commandHistory.isEmpty()) {
+                        // 无匹配命令：命令历史回溯
                         if (commandHistoryIndex == -1) {
                             commandHistoryDraft = cmdInput.toString();
                             commandHistoryIndex = commandHistory.size() - 1;
@@ -697,11 +810,16 @@ public class TerminalUI {
                         cmdInput = new StringBuilder(commandHistory.get(commandHistoryIndex));
                         cmdCursor = cmdInput.length();
                     }
+                    cmdErrorMessage = null;  // 任何输入清除错误
                     continue;
                 }
                 if (key == Key.DOWN) {
-                    // 命令历史前进
-                    if (commandHistoryIndex != -1) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0) {
+                        // 有匹配命令：上下选择
+                        if (selectedCmdIndex < matches.length - 1) selectedCmdIndex++;
+                    } else if (commandHistoryIndex != -1) {
+                        // 无匹配命令：命令历史前进
                         if (commandHistoryIndex < commandHistory.size() - 1) {
                             commandHistoryIndex++;
                             cmdInput = new StringBuilder(commandHistory.get(commandHistoryIndex));
@@ -712,19 +830,24 @@ public class TerminalUI {
                         }
                         cmdCursor = cmdInput.length();
                     }
+                    cmdErrorMessage = null;
                     continue;
                 }
                 if (key == Key.TAB) {
-                    String comp = getCommandCompletion(cmdInput.toString());
-                    if (comp != null) {
-                        cmdInput.append(comp);
+                    // Tab 补全：优先使用选中的命令
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < matches.length) {
+                        cmdInput = new StringBuilder(matches[selectedCmdIndex][0] + " ");
                         cmdCursor = cmdInput.length();
                     }
+                    cmdErrorMessage = null;
                     continue;
                 }
                 if (key >= 32) {
                     cmdInput.insert(cmdCursor, (char) key);
                     cmdCursor++;
+                    selectedCmdIndex = 0;  // 输入变化后重置选中
+                    cmdErrorMessage = null;
                 }
                 continue;
             }
@@ -1178,18 +1301,15 @@ public class TerminalUI {
     private String getCommandCompletion(String partial) {
         if (partial.isEmpty()) return null;
 
-        String[] commands = {"/read", "/toc", "/goto", "/progress", "/info", "/help", "/back", "/add", "/quit"};
-        String match = null;
-        for (String cmd : commands) {
-            if (cmd.startsWith(partial)) {
-                if (match == null) {
-                    match = cmd;
-                } else {
-                    match = longestCommonPrefix(match, cmd);
-                }
-            }
+        // 使用 Command 枚举在当前模式下查找匹配
+        java.util.List<Command> matches = Command.match(partial, this.mode);
+        if (matches.isEmpty()) return null;
+
+        String match = matches.get(0).getName();
+        for (int i = 1; i < matches.size(); i++) {
+            match = longestCommonPrefix(match, matches.get(i).getName());
         }
-        if (match != null && match.length() > partial.length()) {
+        if (match.length() > partial.length()) {
             return match.substring(partial.length());
         }
         return null;
@@ -1256,6 +1376,30 @@ public class TerminalUI {
             storage.saveLibrary(library);
             librarySelected = library.size() - addedCount;  // 选中第一本新添加的
         }
+    }
+
+    // ==================== 命令补全 ====================
+
+    /**
+     * 根据用户输入和当前模式匹配命令，返回前 5 条为 {名称, 描述} 数组。
+     * 输入不以 / 开头时返回空数组。自动使用当前 this.mode 过滤。
+     */
+    private String[][] matchCommands(String input) {
+        java.util.List<Command> matches = Command.match(input, this.mode);
+        String[][] result = new String[matches.size()][];
+        for (int i = 0; i < matches.size(); i++) {
+            Command cmd = matches.get(i);
+            result[i] = new String[]{cmd.getName(), cmd.getDescription()};
+        }
+        return result;
+    }
+
+    /** 返回 input 到 target 的补全后缀，例如 input="/r", target="/read" → "ead" */
+    private static String getCompletionSuffix(String input, String target) {
+        if (target.startsWith(input) && target.length() > input.length()) {
+            return target.substring(input.length());
+        }
+        return null;
     }
 
     /**
