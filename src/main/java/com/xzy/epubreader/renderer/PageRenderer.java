@@ -18,7 +18,8 @@ public class PageRenderer {
     public void render(Book book, int terminalWidth, int terminalHeight) {
         this.terminalWidth = Math.max(terminalWidth, 40);
         this.terminalHeight = Math.max(terminalHeight, 10);
-        this.pageRows = Math.max(this.terminalHeight - 2, 3);
+        // 阅读模式底部 chrome：状态栏(1) + 命令面板边框(2) + 命令输入行(1) = 4 行
+        this.pageRows = Math.max(this.terminalHeight - 4, 3);
 
         for (Chapter chapter : book.getChapters()) {
             chapter.clearPages();
