@@ -72,7 +72,7 @@ public class ScreenRenderer {
             drawLine(row++, "  按 [a] 添加 EPUB 文件");
         } else {
             for (int i = 0; i < entries.size(); i++) {
-                if (row >= terminalHeight - 2) {
+                if (row >= terminalHeight - 4) {
                     drawLine(row++, dim("  ... 共 " + entries.size() + " 本"));
                     break;
                 }
@@ -86,17 +86,20 @@ public class ScreenRenderer {
             }
         }
 
-        fillRemainingLines(row);
+        fillRemainingLines(row, terminalHeight - 2);
 
-        // 消息提示（添加/删除结果）
+        // 3 行命令面板：上下横线边框 + 中间内容
+        drawCommandPanelFrame();
+
+        // 面板内：消息提示 或 未激活命令输入行
         if (message != null && !message.isEmpty()) {
             moveCursorTo(terminalHeight - 1, 1);
             String text = "  " + message;
             write(isError ? red(padRight(text, terminalWidth)) : green(padRight(text, terminalWidth)));
+        } else {
+            drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]打开 [a]添加 [d]移除 [q]退出");
         }
-
-        // 底部操作栏
-        drawBottomBar(" [↑↓]选择 [Enter]打开 [a]添加 [d]移除 [q]退出 ");
+        flush();
     }
 
     /**
@@ -206,6 +209,7 @@ public class ScreenRenderer {
         drawLine(row++, repeat("-", terminalWidth));
         row++;
 
+        drawLine(row++, bold("  阅读模式命令:"));
         String[][] commands = {
                 {"/read", "进入阅读模式，从上次位置继续"},
                 {"/read <n>", "进入阅读模式，从第 n 章开始"},
@@ -215,18 +219,32 @@ public class ScreenRenderer {
                 {"/progress", "显示详细阅读进度"},
                 {"/info", "显示书籍元信息"},
                 {"/back", "返回书架"},
-                {"/help", "显示本帮助"},
         };
 
         for (String[] cmd : commands) {
-            if (row >= terminalHeight - 2) break;
+            if (row >= terminalHeight - 4) break;
+            drawLine(row++, String.format("  %-14s %s", cyan(cmd[0]), dim(cmd[1])));
+        }
+
+        row++;
+        drawLine(row++, bold("  书架模式命令:"));
+        String[][] libCommands = {
+                {"/read <n>", "打开书架中第 n 本书"},
+                {"/add", "添加 EPUB 文件到书架"},
+                {"/quit", "退出程序"},
+                {"/help", "显示本帮助"},
+        };
+
+        for (String[] cmd : libCommands) {
+            if (row >= terminalHeight - 3) break;
             drawLine(row++, String.format("  %-14s %s", cyan(cmd[0]), dim(cmd[1])));
         }
 
         row++;
         drawLine(row++, dim("  阅读模式按键:"));
-        drawLine(row++, dim("  Enter / 空格 / ↓ / → = 下一页    ↑ / ← = 上一页"));
-        drawLine(row++, dim("  Esc = 退出阅读模式"));
+        drawLine(row++, dim("  Enter / 空格 / ▼  / ▶  = 下一页    ▲  / ◀  = 上一页"));
+        drawLine(row++, dim("  / = 输入命令（书架/阅读模式通用）"));
+        drawLine(row++, dim("  Esc = 返回书架（阅读模式）/ 取消命令输入"));
 
         fillRemainingLines(row);
         drawBottomBar(" 按任意键返回 ");
@@ -291,7 +309,7 @@ public class ScreenRenderer {
             if (pageContent != null && !pageContent.isEmpty()) {
                 String[] lines = pageContent.split("\n", -1);
                 for (String line : lines) {
-                    if (row >= terminalHeight - 2) break;
+                    if (row >= terminalHeight - 4) break;
                     if (line.length() > terminalWidth) {
                         line = line.substring(0, terminalWidth);
                     }
@@ -300,15 +318,17 @@ public class ScreenRenderer {
             }
         }
 
-        fillRemainingLines(row);
+        fillRemainingLines(row, terminalHeight - 3);
         drawStatusBar(book);
-        drawBottomBar(" [Enter/空格/↓]下一页 [↑]上一页 [Esc]退出阅读 ");
+        drawCommandPanelFrame();
+        drawInactiveCommandLine("[Enter/空格]下一页 [▲ ]上一页 [Esc]返回书架");
+        flush();
     }
 
     // ==================== 组件绘制 ====================
 
     private void drawStatusBar(Book book) {
-        moveCursorTo(terminalHeight - 1, 1);
+        moveCursorTo(terminalHeight - 3, 1);
         write(REVERSE);
 
         int chIdx = book.getCurrentChapter() + 1;
@@ -334,9 +354,43 @@ public class ScreenRenderer {
         flush();
     }
 
-    /** 输入栏：青色提示符 + 用户输入 + 灰色补全提示，光标定位到正确位置 */
-    private void drawInputBarWithCompletion(String input, int cursorPos, String completion) {
+    /** 绘制命令面板的上下横线边框（终端底部 3 行面板） */
+    private void drawCommandPanelFrame() {
+        String border = dim(repeat("─", terminalWidth));
+        moveCursorTo(terminalHeight - 2, 1);
+        write(border);
         moveCursorTo(terminalHeight, 1);
+        write(border);
+    }
+
+    /** 绘制面板内未激活的命令输入行：青色 > 提示符 + 灰色提示 */
+    private void drawInactiveCommandLine() {
+        drawInactiveCommandLine(null);
+    }
+
+    /** 绘制面板内未激活的命令输入行，可附加模式专属提示 */
+    private void drawInactiveCommandLine(String extraHints) {
+        moveCursorTo(terminalHeight - 1, 1);
+        write("\033[K");
+        write(CYAN + "> " + RESET);
+        if (extraHints != null && !extraHints.isEmpty()) {
+            write(dim("[/]命令  " + extraHints));
+        } else {
+            write(dim("[/]命令"));
+        }
+    }
+
+    /** 在命令面板内显示临时消息（用于命令错误提示等），等待按键后由调用方清除 */
+    public void drawMessageBar(String message, boolean isError) {
+        moveCursorTo(terminalHeight - 1, 1);
+        String text = "  " + message;
+        write(isError ? red(padRight(text, terminalWidth)) : dim(padRight(text, terminalWidth)));
+        flush();
+    }
+
+    /** 输入栏：青色提示符 + 用户输入 + 灰色补全提示，光标定位到正确位置（面板内） */
+    private void drawInputBarWithCompletion(String input, int cursorPos, String completion) {
+        moveCursorTo(terminalHeight - 1, 1);
         write("\033[K");  // 先清除整行
         write(CYAN + "> " + RESET);
         write(input);
@@ -344,7 +398,7 @@ public class ScreenRenderer {
             write(hint(completion));
         }
         // 将终端光标移到用户输入中的正确位置
-        moveCursorTo(terminalHeight, 3 + cursorPos);
+        moveCursorTo(terminalHeight - 1, 3 + cursorPos);
         flush();
     }
 
@@ -353,14 +407,18 @@ public class ScreenRenderer {
         drawInputBarWithCompletion(input, cursorPos, completion);
     }
 
-    /** 删除确认栏：覆盖底部操作栏，提示用户确认 */
+    /** 删除确认栏：在命令面板内用红色显示确认提示 */
     public void drawDeleteConfirmBar(String bookTitle) {
-        moveCursorTo(terminalHeight, 1);
+        moveCursorTo(terminalHeight - 2, 1);
+        write(" ".repeat(terminalWidth));
+        moveCursorTo(terminalHeight - 1, 1);
         String hint = " 确认删除《" + bookTitle + "》？ [Enter]确认 [ESC]取消 ";
         if (hint.length() > terminalWidth) {
             hint = hint.substring(0, terminalWidth);
         }
-        write(red(hint));
+        write(red(padRight(hint, terminalWidth)));
+        moveCursorTo(terminalHeight, 1);
+        write(" ".repeat(terminalWidth));
         flush();
     }
 
@@ -383,8 +441,12 @@ public class ScreenRenderer {
     }
 
     private void fillRemainingLines(int startRow) {
+        fillRemainingLines(startRow, terminalHeight - 1);
+    }
+
+    private void fillRemainingLines(int startRow, int endRow) {
         String blank = " ".repeat(terminalWidth);
-        for (int r = startRow; r < terminalHeight - 1; r++) {
+        for (int r = startRow; r < endRow; r++) {
             drawLine(r, blank);
         }
     }
