@@ -3,6 +3,7 @@ package com.xzy.epubreader.ui;
 import com.xzy.epubreader.model.Book;
 import com.xzy.epubreader.model.Chapter;
 import com.xzy.epubreader.model.LibraryEntry;
+import com.xzy.epubreader.renderer.PageRenderer;
 
 import java.io.PrintWriter;
 import java.util.List;
@@ -373,38 +374,53 @@ public class ScreenRenderer {
      * <p>
      * 当 commands 为空或 length=0 时只显示最小面板（4 行）；
      * 有匹配命令时面板向上扩展，每多一条命令多占一行，最多显示 5 条。
-     * 书籍内容区域不变，被覆盖的部分直接遮挡。
+     * 底部提示分左右：左侧通用提示（如 "ESC 退出命令"），右侧执行结果（绿色/红色）。
+     * 左右放不下时右侧结果独佔一行。书籍内容区域不变，被覆盖的部分直接遮挡。
      *
-     * @param input        用户已输入的文本
-     * @param cursorPos    光标在输入中的位置
-     * @param completion   补全建议（灰色显示在输入末尾）
-     * @param commands     匹配的命令数组 [{name, desc}, ...]，最多 5 条
+     * @param input         用户已输入的文本
+     * @param cursorPos     光标在输入中的位置
+     * @param completion    补全建议（灰色显示在输入末尾）
+     * @param commands      匹配的命令数组 [{name, desc}, ...]，最多 5 条
      * @param selectedIndex 当前选中的命令索引，-1 表示无选中
-     * @param bottomHint   底部提示文本（如 "ESC 退出命令…" 或错误消息），null 则不显示
+     * @param leftHint      左侧通用提示（如 "ESC 退出命令…"），null 则不显示
+     * @param rightHint     右侧执行结果，null 则不显示
+     * @param rightIsError  右侧结果是错误（红色）还是成功（绿色）
      */
     public void drawExpandedCommandAreaWithHints(String input, int cursorPos, String completion,
                                                   String[][] commands, int selectedIndex,
-                                                  String bottomHint) {
+                                                  String leftHint, String rightHint, boolean rightIsError) {
         String border = dim(repeat("─", terminalWidth));
         int cmdCount = (commands != null) ? Math.min(commands.length, 5) : 0;
 
-        // 面板行号计算
-        // cmdCount>0: 上边框 + 输入 + 分隔 + N条命令 + 下边框 (+ 底部提示)
-        // cmdCount=0: 上边框 + 输入 + 下边框 (+ 底部提示)
+        // 是否需要额外行：右侧结果放不下时多占一行
+        boolean needExtraLine = false;
+        if (rightHint != null && !rightHint.isEmpty() && leftHint != null && !leftHint.isEmpty()) {
+            int leftW = displayWidth(leftHint);
+            int rightW = displayWidth(rightHint);
+            // 左提示从第 3 列开始（缩进 2），右侧至少留 2 列间距
+            needExtraLine = (leftW + rightW + 4 > terminalWidth);
+        }
+
+        int extra = needExtraLine ? 1 : 0;
+
+        // 面板行号计算（extra 行会推高整个面板）
+        // cmdCount>0: 上边框 + 输入 + 分隔 + N条命令 + 下边框 (+ 提示行)
+        // cmdCount=0: 上边框 + 输入 + 下边框 (+ 提示行)
         int panelTop, inputRow, sepRow, cmdStart;
         if (cmdCount > 0) {
-            panelTop = terminalHeight - (4 + cmdCount);  // e.g. N=5 → H-9
-            inputRow = terminalHeight - (3 + cmdCount);  // e.g. N=5 → H-8
-            sepRow   = terminalHeight - (2 + cmdCount);  // e.g. N=5 → H-7
-            cmdStart = terminalHeight - (1 + cmdCount);  // e.g. N=5 → H-6  ..last cmd at H-2
+            panelTop = terminalHeight - (4 + cmdCount + extra);
+            inputRow = terminalHeight - (3 + cmdCount + extra);
+            sepRow   = terminalHeight - (2 + cmdCount + extra);
+            cmdStart = terminalHeight - (1 + cmdCount + extra);
         } else {
-            panelTop = terminalHeight - 3;  // H-3
-            inputRow = terminalHeight - 2;  // H-2
-            sepRow   = 0;                   // unused
-            cmdStart = 0;                   // unused
+            panelTop = terminalHeight - (3 + extra);
+            inputRow = terminalHeight - (2 + extra);
+            sepRow   = 0;   // unused
+            cmdStart = 0;   // unused
         }
-        int bottomBorder = terminalHeight - 1;  // H-1
-        int hintRow = terminalHeight;           // H
+        int bottomBorder = terminalHeight - (1 + extra);  // H-1 or H-2
+        int hintRow1 = terminalHeight - extra;            // H or H-1
+        int hintRow2 = terminalHeight;                     // H (only used when extra=1)
 
         // 上边框
         moveCursorTo(panelTop, 1);
@@ -433,7 +449,6 @@ public class ScreenRenderer {
                 String desc = commands[i][1];
                 String line;
                 if (i == selectedIndex) {
-                    // 选中行：反色高亮
                     line = REVERSE + "  " + padRight(name, 14) + " " + desc;
                     line = padRightVisual(line, terminalWidth);
                     line = line + RESET;
@@ -450,15 +465,43 @@ public class ScreenRenderer {
         write(border);
 
         // 底部提示
-        moveCursorTo(hintRow, 1);
-        write("\033[K");
-        if (bottomHint != null && !bottomHint.isEmpty()) {
-            write(dim("  " + bottomHint));
+        if (!needExtraLine) {
+            // 单行：左提示 + 右结果并排
+            drawHintLine(hintRow1, leftHint, rightHint, rightIsError);
+        } else {
+            // 双行：上一行放不下时，先画左提示，下一行画右结果
+            drawHintLine(hintRow1, leftHint, null, false);
+            drawHintLine(hintRow2, null, rightHint, rightIsError);
         }
 
         // 光标定位到输入位置
         moveCursorTo(inputRow, 3 + cursorPos);
         flush();
+    }
+
+    /** 在指定行绘制提示：左对齐 leftText，右对齐 rightText（可带颜色） */
+    private void drawHintLine(int row, String leftText, String rightText, boolean isError) {
+        if ((leftText == null || leftText.isEmpty()) && (rightText == null || rightText.isEmpty())) {
+            // 空提示：用空格填充整行
+            moveCursorTo(row, 1);
+            write(" ".repeat(terminalWidth));
+            return;
+        }
+        moveCursorTo(row, 1);
+        write("\033[K");
+
+        if (leftText != null && !leftText.isEmpty()) {
+            write(dim("  " + leftText));
+        }
+
+        if (rightText != null && !rightText.isEmpty()) {
+            // 计算右侧文本的起始列
+            int rightW = displayWidth(rightText);
+            int startCol = terminalWidth - rightW + 1;
+            if (startCol < 3) startCol = 3;  // 至少留 2 列间距
+            moveCursorTo(row, startCol);
+            write(isError ? red(rightText) : green(rightText));
+        }
     }
 
     /** 在命令面板内显示临时消息（用于命令错误提示等），等待按键后由调用方清除 */
@@ -577,7 +620,7 @@ public class ScreenRenderer {
             char c = s.charAt(i);
             if (esc) { if (c == 'm') esc = false; continue; }
             if (c == '\033') { esc = true; continue; }
-            w++;
+            w += PageRenderer.getCharDisplayWidth(c);
         }
         return w;
     }

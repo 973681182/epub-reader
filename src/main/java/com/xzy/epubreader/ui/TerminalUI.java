@@ -149,13 +149,18 @@ public class TerminalUI {
             if (cmdActive) {
                 // 展开式命令输入区域，匹配命令列表 + 选中高亮
                 String[][] matches = matchCommands(cmdInput.toString());
-                String bottomHint;
+                String leftHint;
+                String rightHint = null;
+                boolean rightIsError = false;
+
                 if (cmdErrorMessage != null) {
-                    bottomHint = cmdErrorMessage;
+                    leftHint = "ESC 退出命令  Enter 重新输入";
+                    rightHint = cmdErrorMessage;
+                    rightIsError = true;
                 } else if (matches.length > 0) {
-                    bottomHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
+                    leftHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
                 } else {
-                    bottomHint = "ESC 退出命令模式";
+                    leftHint = "ESC 退出命令模式";
                 }
                 String completion = null;
                 if (matches.length > 0) {
@@ -166,7 +171,8 @@ public class TerminalUI {
                 }
                 screen.drawExpandedCommandAreaWithHints(
                         cmdInput.toString(), cmdCursor, completion,
-                        matches, selectedCmdIndex, bottomHint);
+                        matches, selectedCmdIndex,
+                        leftHint, rightHint, rightIsError);
             }
 
             // 命令模式下用完整的输入按键处理，否则用简化的按键读取
@@ -649,13 +655,18 @@ public class TerminalUI {
             if (cmdActive) {
                 // 展开式命令输入区域，匹配命令列表 + 选中高亮
                 String[][] matches = matchCommands(cmdInput.toString());
-                String bottomHint;
+                String leftHint;
+                String rightHint = null;
+                boolean rightIsError = false;
+
                 if (cmdErrorMessage != null) {
-                    bottomHint = cmdErrorMessage;
+                    leftHint = "ESC 退出命令  Enter 重新输入";
+                    rightHint = cmdErrorMessage;
+                    rightIsError = true;
                 } else if (matches.length > 0) {
-                    bottomHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
+                    leftHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
                 } else {
-                    bottomHint = "ESC 退出命令模式";
+                    leftHint = "ESC 退出命令模式";
                 }
                 String completion = null;
                 if (matches.length > 0) {
@@ -666,7 +677,8 @@ public class TerminalUI {
                 }
                 screen.drawExpandedCommandAreaWithHints(
                         cmdInput.toString(), cmdCursor, completion,
-                        matches, selectedCmdIndex, bottomHint);
+                        matches, selectedCmdIndex,
+                        leftHint, rightHint, rightIsError);
             }
 
             // 命令模式下用完整的输入按键处理，否则用简化的按键读取
