@@ -8,6 +8,11 @@ import nl.siegmann.epublib.domain.SpineReference;
 import nl.siegmann.epublib.domain.TOCReference;
 import nl.siegmann.epublib.epub.EpubReader;
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.nodes.Node;
+import org.jsoup.nodes.TextNode;
+import org.jsoup.select.NodeVisitor;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -164,6 +169,10 @@ public class EpubParser {
 
     /**
      * 将 EPUB 资源（HTML/XHTML）转换为纯文本。
+     * <p>
+     * 手动遍历 body 的 DOM 树，在每个块级元素（&lt;p&gt;、&lt;div&gt;、&lt;h1&gt;~&lt;h6&gt; 等）
+     * 之前插入换行符；&lt;br&gt; 也转为换行；&lt;script&gt;/&lt;style&gt; 跳过。
+     * Jsoup 的 text() 和 wholeText() 都不能正确保留段落分隔，所以需要自行遍历。
      */
     private String resourceToPlainText(Resource resource) {
         try {
@@ -171,11 +180,38 @@ public class EpubParser {
             if (data == null || data.length == 0) return "";
 
             String html = new String(data, StandardCharsets.UTF_8);
-            // 用 Jsoup 提取纯文本
-            String text = Jsoup.parse(html).text();
+            Document doc = Jsoup.parse(html);
 
-            // 合并多余空白行（保留段落分隔）
-            return text.replaceAll("\\s*\n\\s*", "\n").trim();
+            // 移除不需要的标签内容
+            doc.select("script, style, noscript").remove();
+
+            StringBuilder sb = new StringBuilder();
+            doc.body().traverse(new NodeVisitor() {
+                public void head(Node node, int depth) {
+                    if (node instanceof TextNode) {
+                        sb.append(((TextNode) node).getWholeText());
+                    } else if (node instanceof Element) {
+                        Element el = (Element) node;
+                        // <br> 转为换行
+                        if ("br".equals(el.normalName())) {
+                            sb.append('\n');
+                        } else if (el.isBlock() && sb.length() > 0
+                                && sb.charAt(sb.length() - 1) != '\n') {
+                            // 块级元素前插入换行（span/em/a 等行内元素不插入）
+                            sb.append('\n');
+                        }
+                    }
+                }
+
+                public void tail(Node node, int depth) {
+                }
+            });
+
+            // 规范化空白：去掉行首尾空白/制表符，合并多个连续空行
+            return sb.toString()
+                    .replaceAll("[ \\t]*\\n[ \\t]*", "\n")
+                    .replaceAll("\\n{3,}", "\n\n")
+                    .trim();
         } catch (IOException e) {
             // 资源读取失败，返回空字符串
             return "";

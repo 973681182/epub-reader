@@ -53,14 +53,15 @@ public class PageRenderer {
         // 第一步：按段落分行
         String[] paragraphs = text.split("\n");
 
-        // 第二步：对每个段落进行宽度换行
+        // 第二步：对每个段落进行宽度换行（段首加两个全角空格缩进）
         java.util.List<String> allLines = new java.util.ArrayList<>();
         for (String para : paragraphs) {
             if (para.trim().isEmpty()) {
                 allLines.add("");  // 保留空行作为段落分隔
                 continue;
             }
-            wordWrapLine(para, allLines);
+            // 段首缩进：两个全角空格（U+3000），每个占 2 列，共 4 列
+            wordWrapLine("　　" + para.trim(), allLines);
         }
 
         // 第三步：按 pageRows 切分成页面
