@@ -42,14 +42,21 @@ public class ScreenRenderer {
         this.terminalHeight = height;
     }
 
+    // DECSCUSR 光标样式
+    private static final String CURSOR_STYLE  = "\033[2 q";  // 不闪动方块
+    private static final String CURSOR_COLOR  = "\033]12;#c0c0c0\007"; // 亮灰色，与文字颜色协调
+    private static final String CURSOR_RESET  = "\033]112\007\033[0 q"; // 恢复默认颜色和样式
+    private static final String CURSOR_HIDE   = "\033[?25l";
+    private static final String CURSOR_SHOW   = "\033[?25h";
+
     // ==================== 交替屏幕缓冲区 ====================
 
     public void enterAltScreen() {
-        write(ALT_SCREEN_ON + CLEAR_SCREEN + CURSOR_HOME);
+        write(ALT_SCREEN_ON + CLEAR_SCREEN + CURSOR_HOME + CURSOR_STYLE + CURSOR_COLOR + CURSOR_HIDE);
     }
 
     public void exitAltScreen() {
-        write(ALT_SCREEN_OFF);
+        write(CURSOR_RESET + ALT_SCREEN_OFF);
         flush();
     }
 
@@ -100,6 +107,7 @@ public class ScreenRenderer {
         } else {
             drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]打开 [a]添加 [d]移除 [q]退出");
         }
+        write(CURSOR_HIDE);
         flush();
     }
 
@@ -291,6 +299,7 @@ public class ScreenRenderer {
         drawStatusBar(book);
         drawCommandPanelFrame();
         drawInactiveCommandLine("[Enter/空格]下一页 [▲ ]上一页 [Esc]返回书架");
+        write(CURSOR_HIDE);
         flush();
     }
 
@@ -313,13 +322,13 @@ public class ScreenRenderer {
 
     private void drawCommandBar() {
         moveCursorTo(terminalHeight, 1);
-        write(CYAN + "> " + RESET);
+        write(CYAN + "> " + RESET + CURSOR_SHOW);
         flush();
     }
 
     private void drawBottomBar(String hint) {
         moveCursorTo(terminalHeight, 1);
-        write(dim(hint));
+        write(dim(hint) + CURSOR_HIDE);
         flush();
     }
 
@@ -454,8 +463,10 @@ public class ScreenRenderer {
             drawHintLine(hintRow2, null, rightHint, rightIsError);
         }
 
-        // 光标定位到输入位置
-        moveCursorTo(inputRow, 3 + cursorPos);
+        // 光标定位到输入位置（用显示宽度，CJK 字符占 2 列）
+        int displayCursor = displayWidth(input.substring(0, Math.min(cursorPos, input.length())));
+        moveCursorTo(inputRow, 3 + displayCursor);
+        write(CURSOR_SHOW);
         flush();
     }
 
@@ -484,7 +495,6 @@ public class ScreenRenderer {
         }
     }
 
-    /** 在命令面板内显示临时消息（用于命令错误提示等），等待按键后由调用方清除 */
     /** 命令模式输入行重绘：只更新最底行，不清屏 */
     public void redrawCommandLine(String input, int cursorPos, String completion) {
         moveCursorTo(terminalHeight - 1, 1);
@@ -494,7 +504,9 @@ public class ScreenRenderer {
         if (completion != null && !completion.isEmpty()) {
             write(hint(completion));
         }
-        moveCursorTo(terminalHeight - 1, 3 + cursorPos);
+        int displayCursor = displayWidth(input.substring(0, Math.min(cursorPos, input.length())));
+        moveCursorTo(terminalHeight - 1, 3 + displayCursor);
+        write(CURSOR_SHOW);
         flush();
     }
 
