@@ -14,6 +14,8 @@ public enum CommandResult {
     SHOW_PROGRESS,
     /** 显示书籍信息 */
     SHOW_INFO,
+    /** 显示设置页面 */
+    SHOW_SETTINGS,
     /** 显示帮助 */
     SHOW_HELP,
     /** 返回书架 */

@@ -4,6 +4,9 @@ import com.xzy.epubreader.model.Book;
 import com.xzy.epubreader.model.LibraryEntry;
 import com.xzy.epubreader.parser.EpubParser;
 import com.xzy.epubreader.renderer.PageRenderer;
+import com.xzy.epubreader.storage.ConfigManager;
+import com.xzy.epubreader.storage.ConfigManager.SettingItem;
+import com.xzy.epubreader.storage.ConfigManager.SettingSection;
 import com.xzy.epubreader.storage.StorageManager;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
@@ -22,12 +25,14 @@ public class TerminalUI {
 
     private final StorageManager storage;
     private final PageRenderer pageRenderer;
+    private ConfigManager config;
 
     private Terminal terminal;
     private PrintWriter writer;
     private ScreenRenderer screen;
 
     private Mode mode;
+    private Mode prevMode;  // 进入设置页面前的模式，退出时恢复
     private boolean running;
 
     // 书架
@@ -66,6 +71,7 @@ public class TerminalUI {
     public void start() throws IOException {
         storage.init();
         library = storage.loadLibrary();
+        config = new ConfigManager(storage.getDataDir());
         scanBooksDirectory();
         initTerminal();
 
@@ -76,6 +82,7 @@ public class TerminalUI {
                     case LIBRARY:  libraryLoop(); break;
                     case COMMAND:  commandLoop(); break;
                     case READING:  readingLoop(); break;
+                    case SETTINGS: settingsLoop(); break;
                 }
             }
         } finally {
@@ -86,6 +93,7 @@ public class TerminalUI {
     public void openDirectly(String filePath) throws IOException {
         storage.init();
         library = storage.loadLibrary();
+        config = new ConfigManager(storage.getDataDir());
         scanBooksDirectory();
         initTerminal();
 
@@ -95,8 +103,12 @@ public class TerminalUI {
                 mode = Mode.READING;
                 while (running) {
                     updateTerminalSize();
-                    if (mode == Mode.READING) readingLoop();
-                    else break;
+                    switch (mode) {
+                        case READING:  readingLoop(); break;
+                        case SETTINGS: settingsLoop(); break;
+                        default: break;
+                    }
+                    if (mode != Mode.READING && mode != Mode.SETTINGS) break;
                 }
             }
         } finally {
@@ -112,6 +124,7 @@ public class TerminalUI {
                 .build();
         writer = terminal.writer();
         screen = new ScreenRenderer(writer, terminal.getWidth(), terminal.getHeight());
+        applyDisplayConfigToScreen();
         screen.enterAltScreen();
         terminal.enterRawMode();
     }
@@ -121,6 +134,34 @@ public class TerminalUI {
             screen.exitAltScreen();
             terminal.close();
         } catch (Exception ignored) {}
+    }
+
+    /** 将显示相关配置应用到 ScreenRenderer（光标样式、显示开关） */
+    private void applyDisplayConfigToScreen() {
+        String cursorAnsi;
+        switch (config.getCursorStyle()) {
+            case "underline": cursorAnsi = "\033[4 q"; break;
+            case "bar":       cursorAnsi = "\033[6 q"; break;
+            default:          cursorAnsi = "\033[2 q"; // block
+        }
+        String colorAnsi = "\033]12;" + config.getCursorColor() + "\007";
+        screen.setCursorStyleCode(cursorAnsi);
+        screen.setCursorColorCode(colorAnsi);
+        screen.setShowProgressBar(config.isShowProgressBar());
+        screen.setShowCommandPanel(config.isShowCommandPanel());
+    }
+
+    /** 将页面相关配置应用到 PageRenderer（缩进、底部边距） */
+    private void applyPageConfig() {
+        // 计算 chrome 实际需要的行数
+        int fromChrome = 0;
+        if (config.isShowProgressBar()) fromChrome += 1;
+        if (config.isShowCommandPanel()) fromChrome += 3;
+        // effectiveBottomMargin 取 chrome 需求与用户配置的较大值，保证内容不被遮挡
+        int effective = Math.max(fromChrome, config.getBottomMargin());
+        effective = Math.max(effective, 1); // 至少保留 1 行安全边距
+        pageRenderer.setBottomMargin(effective);
+        pageRenderer.setFirstLineIndentEnabled(config.isFirstLineIndent());
     }
 
     // ==================== LIBRARY 模式 ====================
@@ -385,7 +426,7 @@ public class TerminalUI {
             }
 
             // ---- 书架模式按键处理 ----
-            if (key == '/') {
+            if (key == config.getLibraryCommandKey()) {
                 // 激活命令行，预填 /
                 cmdActive = true;
                 cmdInput.setLength(0);
@@ -394,52 +435,41 @@ public class TerminalUI {
                 continue;
             }
 
-            switch (key) {
-                case Key.ENTER:
-                    if (!library.isEmpty() && librarySelected >= 0 && librarySelected < library.size()) {
-                        openBook(library.get(librarySelected).getPath());
-                        if (currentBook != null) {
-                            mode = Mode.READING;
-                            return;
-                        }
+            if (key == config.getLibraryOpenKey()) {
+                if (!library.isEmpty() && librarySelected >= 0 && librarySelected < library.size()) {
+                    openBook(library.get(librarySelected).getPath());
+                    if (currentBook != null) {
+                        mode = Mode.READING;
+                        return;
                     }
-                    break;
-
-                case Key.UP:
-                    if (librarySelected > 0) librarySelected--;
-                    break;
-
-                case Key.DOWN:
-                    if (librarySelected < library.size() - 1) librarySelected++;
-                    break;
-
-                case 'q': case 'Q':
-                    running = false;
-                    return;
-
-                case 'a': case 'A':
-                    // 自动进入命令模式，预填 /add
+                }
+            } else if (key == config.getLibrarySelectUpKey()) {
+                if (librarySelected > 0) librarySelected--;
+            } else if (key == config.getLibrarySelectDownKey()) {
+                if (librarySelected < library.size() - 1) librarySelected++;
+            } else if (matchesKey(key, config.getLibraryQuitKey())) {
+                running = false;
+                return;
+            } else if (matchesKey(key, config.getLibraryQuickAddKey())) {
+                // 自动进入命令模式，预填 /add
+                cmdActive = true;
+                cmdInput = new StringBuilder("/add ");
+                cmdCursor = 5;
+                selectedCmdIndex = 0;
+                cmdErrorMessage = null;
+                commandHistoryIndex = -1;
+                commandHistoryDraft = null;
+            } else if (matchesKey(key, config.getLibraryQuickDeleteKey())) {
+                // 自动进入命令模式，预填 /delete 书名
+                if (librarySelected >= 0 && librarySelected < library.size()) {
                     cmdActive = true;
-                    cmdInput = new StringBuilder("/add ");
-                    cmdCursor = 5;
+                    cmdInput = new StringBuilder("/delete " + library.get(librarySelected).getTitle());
+                    cmdCursor = cmdInput.length();
                     selectedCmdIndex = 0;
                     cmdErrorMessage = null;
                     commandHistoryIndex = -1;
                     commandHistoryDraft = null;
-                    break;
-
-                case 'd': case 'D':
-                    // 自动进入命令模式，预填 /delete 书名
-                    if (librarySelected >= 0 && librarySelected < library.size()) {
-                        cmdActive = true;
-                        cmdInput = new StringBuilder("/delete " + library.get(librarySelected).getTitle());
-                        cmdCursor = cmdInput.length();
-                        selectedCmdIndex = 0;
-                        cmdErrorMessage = null;
-                        commandHistoryIndex = -1;
-                        commandHistoryDraft = null;
-                    }
-                    break;
+                }
             }
         }
     }
@@ -532,10 +562,17 @@ public class TerminalUI {
                     if (name.toLowerCase().endsWith(".epub")) name = name.substring(0, name.length() - 5);
                     displayTitle = name;
                 }
-                // 暂存确认信息
-                pendingConfirmType = "add";
-                pendingConfirmPath = canonical;
-                pendingConfirmTitle = displayTitle;
+                if (config.isConfirmAdd()) {
+                    // 暂存确认信息
+                    pendingConfirmType = "add";
+                    pendingConfirmPath = canonical;
+                    pendingConfirmTitle = displayTitle;
+                } else {
+                    // 跳过确认，直接添加
+                    addToLibrary(canonical);
+                    libraryMessage = "已添加: 《" + displayTitle + "》";
+                    libraryMessageIsError = false;
+                }
                 return;
             }
 
@@ -559,9 +596,18 @@ public class TerminalUI {
                         libraryMessageIsError = true;
                         return;
                     }
-                    pendingConfirmType = "delete";
-                    pendingConfirmIndex = idx - 1;
-                    pendingConfirmTitle = library.get(idx - 1).getTitle();
+                    if (config.isConfirmDelete()) {
+                        pendingConfirmType = "delete";
+                        pendingConfirmIndex = idx - 1;
+                        pendingConfirmTitle = library.get(idx - 1).getTitle();
+                    } else {
+                        String title = library.get(idx - 1).getTitle();
+                        library.remove(idx - 1);
+                        if (librarySelected >= library.size()) librarySelected = Math.max(0, library.size() - 1);
+                        storage.saveLibrary(library);
+                        libraryMessage = "已删除: 《" + title + "》";
+                        libraryMessageIsError = false;
+                    }
                     return;
                 } catch (NumberFormatException ignored) {
                     // 不是序号，尝试按书名匹配
@@ -585,9 +631,18 @@ public class TerminalUI {
                     libraryMessageIsError = true;
                     return;
                 }
-                pendingConfirmType = "delete";
-                pendingConfirmIndex = matchIdx;
-                pendingConfirmTitle = library.get(matchIdx).getTitle();
+                if (config.isConfirmDelete()) {
+                    pendingConfirmType = "delete";
+                    pendingConfirmIndex = matchIdx;
+                    pendingConfirmTitle = library.get(matchIdx).getTitle();
+                } else {
+                    String title = library.get(matchIdx).getTitle();
+                    library.remove(matchIdx);
+                    if (librarySelected >= library.size()) librarySelected = Math.max(0, library.size() - 1);
+                    storage.saveLibrary(library);
+                    libraryMessage = "已删除: 《" + title + "》";
+                    libraryMessageIsError = false;
+                }
                 return;
             }
 
@@ -595,6 +650,11 @@ public class TerminalUI {
                 screen.drawHelpScreen();
                 waitForAnyKey();
                 return;
+
+            case SETTINGS:
+                prevMode = mode;
+                mode = Mode.SETTINGS;
+                return; // 返回后由主循环进入 settingsLoop
 
             case QUIT:
             case EXIT:
@@ -801,6 +861,11 @@ public class TerminalUI {
                             screen.drawInfoScreen(currentBook);
                             waitForAnyKey();
                             break;
+                        case SHOW_SETTINGS:
+                            prevMode = mode;
+                            mode = Mode.SETTINGS;
+                            return;
+
                         case SHOW_HELP:
                             cmdInput.setLength(0); cmdCursor = 0; cmdActive = false;
                             selectedCmdIndex = 0; cmdErrorMessage = null;
@@ -922,7 +987,7 @@ public class TerminalUI {
             }
 
             // ---- 阅读模式按键处理 ----
-            if (key == Key.ESC) {
+            if (key == config.getReadingExitKey()) {
                 // 返回书架
                 saveCurrentProgress();
                 currentBook = null;
@@ -931,7 +996,7 @@ public class TerminalUI {
                 return;
             }
 
-            if (key == '/') {
+            if (key == config.getReadingCommandKey()) {
                 // 激活命令行，预填 /
                 cmdActive = true;
                 cmdInput.setLength(0);
@@ -940,12 +1005,311 @@ public class TerminalUI {
                 continue;
             }
 
-            if (key == Key.ENTER || key == ' ' || key == Key.DOWN || key == Key.RIGHT) {
+            if (config.getReadingNextPageKeys().contains(key)) {
                 handleNextPage();
-            } else if (key == Key.UP || key == Key.LEFT) {
+            } else if (config.getReadingPrevPageKeys().contains(key)) {
                 handlePrevPage();
             }
         }
+    }
+
+    // ==================== SETTINGS 模式 ====================
+
+    private void settingsLoop() throws IOException {
+        List<ConfigManager.SettingSection> sections = config.getSettingSections();
+        boolean[] expanded = new boolean[sections.size()];
+        int selectedIndex = 0;
+        String message = null;
+        boolean msgIsError = false;
+
+        // 命令输入状态
+        boolean cmdActive = false;
+        StringBuilder cmdInput = new StringBuilder();
+        int cmdCursor = 0;
+        int selectedCmdIndex = 0;
+        String cmdErrorMessage = null;
+        String cmdSuccessMsg = null; // /set 成功提示，显示在命令区域右侧
+
+        while (mode == Mode.SETTINGS && running) {
+            updateTerminalSize();
+
+            // 计算总行数，用于导航边界
+            int totalRows = sections.size();
+            for (int i = 0; i < sections.size(); i++) {
+                if (expanded[i]) totalRows += sections.get(i).items.size();
+            }
+            if (selectedIndex >= totalRows) selectedIndex = totalRows - 1;
+            if (selectedIndex < 0) selectedIndex = 0;
+
+            String focusedKey = screen.drawSettingsScreen(
+                    sections, expanded, selectedIndex, config,
+                    cmdActive ? null : message, msgIsError);
+
+            if (cmdActive) {
+                String[][] matches = matchCommands(cmdInput.toString());
+                String leftHint;
+                String rightHint = null;
+                boolean rightIsError = false;
+                if (cmdErrorMessage != null) {
+                    leftHint = "ESC 退出命令  Enter 重新输入";
+                    rightHint = cmdErrorMessage;
+                    rightIsError = true;
+                } else if (cmdSuccessMsg != null) {
+                    leftHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
+                    rightHint = cmdSuccessMsg;
+                    rightIsError = false;
+                } else if (matches.length > 0) {
+                    leftHint = "ESC 退出命令  Enter 执行  ↑↓ 选择  Tab 补全";
+                } else {
+                    leftHint = "ESC 退出命令模式";
+                }
+                String completion = null;
+                if (matches.length > 0) {
+                    int compIdx = matches.length == 1 ? 0 : selectedCmdIndex;
+                    if (compIdx >= 0 && compIdx < matches.length) {
+                        completion = getCompletionSuffix(cmdInput.toString(), matches[compIdx][0]);
+                    }
+                }
+                screen.drawExpandedCommandAreaWithHints(
+                        cmdInput.toString(), cmdCursor, completion,
+                        matches, selectedCmdIndex,
+                        leftHint, rightHint, rightIsError);
+            }
+
+            int key = cmdActive ? readKeyInput() : readKey();
+            if (key == Key.CTRL_C) { running = false; return; }
+
+            // 清除一次性消息
+            message = null;
+            msgIsError = false;
+            cmdSuccessMsg = null; // 成功提示只显示一帧，按键后清除
+
+            if (cmdActive) {
+                // ---- 命令输入处理 ----
+                if (key == Key.ESC) {
+                    cmdActive = false;
+                    cmdInput.setLength(0);
+                    cmdCursor = 0;
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
+                    cmdSuccessMsg = null;
+                    commandHistoryIndex = -1;
+                    commandHistoryDraft = null;
+                    continue;
+                }
+                if (key == Key.ENTER) {
+                    String[][] enterMatches = matchCommands(cmdInput.toString());
+                    if (enterMatches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < enterMatches.length) {
+                        cmdInput = new StringBuilder(enterMatches[selectedCmdIndex][0] + " ");
+                        cmdCursor = cmdInput.length();
+                    }
+                    String cmd = cmdInput.toString().trim();
+                    commandHistoryIndex = -1;
+                    commandHistoryDraft = null;
+                    if (cmd.isEmpty()) {
+                        cmdActive = false;
+                        continue;
+                    }
+                    commandHistory.add(cmd);
+                    // 在设置模式下处理命令
+                    Command parsedCmd = Command.parse(cmd, Mode.SETTINGS);
+                    if (parsedCmd == Command.SET) {
+                        String[] parts = cmd.trim().split("\\s+", 3);
+                        if (parts.length >= 3) {
+                            String err = config.set(parts[1], parts[2]);
+                            if (err != null) {
+                                cmdErrorMessage = err;
+                            } else {
+                                // 成功：右侧绿色提示，保持命令行激活让用户手动 ESC 退出
+                                cmdSuccessMsg = "已设置 " + parts[1] + " = " + parts[2];
+                                cmdErrorMessage = null;
+                                cmdInput.setLength(0);
+                                cmdCursor = 0;
+                                selectedCmdIndex = 0;
+                            }
+                        } else {
+                            cmdErrorMessage = "用法: /set <属性名> <值>";
+                        }
+                    } else if (parsedCmd == Command.SETTINGS) {
+                        cmdActive = false;
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        selectedCmdIndex = 0;
+                        cmdErrorMessage = null;
+                    } else if (parsedCmd == Command.HELP) {
+                        screen.drawHelpScreen();
+                        waitForAnyKey();
+                        cmdActive = false;
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        selectedCmdIndex = 0;
+                        cmdErrorMessage = null;
+                    } else if (parsedCmd != null) {
+                        cmdErrorMessage = "设置模式下不支持该命令，请使用 /set 或 /settings";
+                    } else {
+                        cmdErrorMessage = commandHandler != null
+                                ? commandHandler.getLastMessage()
+                                : "未知命令";
+                        if (cmdErrorMessage == null) cmdErrorMessage = "未知命令";
+                    }
+                    continue;
+                }
+                // 编辑按键
+                if (key == Key.BACKSPACE) {
+                    if (cmdCursor > 0) { cmdInput.deleteCharAt(cmdCursor - 1); cmdCursor--; }
+                    continue;
+                }
+                if (key == Key.DELETE) {
+                    if (cmdCursor < cmdInput.length()) { cmdInput.deleteCharAt(cmdCursor); }
+                    continue;
+                }
+                if (key == Key.LEFT) { if (cmdCursor > 0) cmdCursor--; continue; }
+                if (key == Key.RIGHT) { if (cmdCursor < cmdInput.length()) cmdCursor++; continue; }
+                if (key == Key.HOME) { cmdCursor = 0; continue; }
+                if (key == Key.END) { cmdCursor = cmdInput.length(); continue; }
+                if (key == Key.UP) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0) {
+                        if (selectedCmdIndex > 0) selectedCmdIndex--;
+                    } else if (!commandHistory.isEmpty()) {
+                        if (commandHistoryIndex == -1) {
+                            commandHistoryDraft = cmdInput.toString();
+                            commandHistoryIndex = commandHistory.size() - 1;
+                        } else if (commandHistoryIndex > 0) {
+                            commandHistoryIndex--;
+                        }
+                        cmdInput = new StringBuilder(commandHistory.get(commandHistoryIndex));
+                        cmdCursor = cmdInput.length();
+                    }
+                    cmdErrorMessage = null;
+                    continue;
+                }
+                if (key == Key.DOWN) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0) {
+                        if (selectedCmdIndex < matches.length - 1) selectedCmdIndex++;
+                    } else if (commandHistoryIndex != -1) {
+                        if (commandHistoryIndex < commandHistory.size() - 1) {
+                            commandHistoryIndex++;
+                            cmdInput = new StringBuilder(commandHistory.get(commandHistoryIndex));
+                        } else {
+                            commandHistoryIndex = -1;
+                            cmdInput = new StringBuilder(commandHistoryDraft != null ? commandHistoryDraft : "");
+                            commandHistoryDraft = null;
+                        }
+                        cmdCursor = cmdInput.length();
+                    }
+                    cmdErrorMessage = null;
+                    continue;
+                }
+                if (key == Key.TAB) {
+                    String[][] matches = matchCommands(cmdInput.toString());
+                    if (matches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < matches.length) {
+                        cmdInput = new StringBuilder(matches[selectedCmdIndex][0] + " ");
+                        cmdCursor = cmdInput.length();
+                    }
+                    cmdErrorMessage = null;
+                    continue;
+                }
+                if (key >= 32) {
+                    cmdInput.insert(cmdCursor, (char) key);
+                    cmdCursor++;
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
+                }
+                continue;
+            }
+
+            // ---- 设置模式按键处理 ----
+            if (key == Key.ESC) {
+                mode = prevMode;
+                return;
+            }
+
+            if (key == '/') {
+                cmdActive = true;
+                cmdInput.setLength(0);
+                cmdInput.append('/');
+                cmdCursor = 1;
+                continue;
+            }
+
+            if (key == Key.ENTER) {
+                // 确定当前选中是什么
+                int[] sel = resolveSelection(sections, expanded, selectedIndex);
+                if (sel[0] < 0) continue;
+
+                int si = sel[0], ii = sel[1];
+                if (ii < 0) {
+                    // 板块头：切换展开/收起
+                    expanded[si] = !expanded[si];
+                    if (!expanded[si]) {
+                        // 收起后调整选中位置
+                        if (selectedIndex > 0) selectedIndex = Math.min(selectedIndex, resolveTotalRows(sections, expanded) - 1);
+                    }
+                } else {
+                    // 属性项：自动填充命令行
+                    SettingItem item = sections.get(si).items.get(ii);
+                    cmdActive = true;
+                    cmdInput = new StringBuilder("/set " + item.key + " ");
+                    cmdCursor = cmdInput.length();
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
+                    commandHistoryIndex = -1;
+                    commandHistoryDraft = null;
+                }
+            } else if (key == Key.UP) {
+                if (selectedIndex > 0) selectedIndex--;
+            } else if (key == Key.DOWN) {
+                int max = resolveTotalRows(sections, expanded);
+                if (selectedIndex < max - 1) selectedIndex++;
+            } else if (key == Key.LEFT || key == Key.RIGHT) {
+                // 枚举和布尔值切换
+                int[] sel = resolveSelection(sections, expanded, selectedIndex);
+                if (sel[0] >= 0 && sel[1] >= 0) {
+                    SettingItem item = sections.get(sel[0]).items.get(sel[1]);
+                    if (item.type == ConfigManager.SettingType.ENUM && item.options != null) {
+                        String current = config.getValueString(item.key);
+                        int idx = -1;
+                        for (int i = 0; i < item.options.length; i++) {
+                            if (item.options[i].equals(current)) { idx = i; break; }
+                        }
+                        if (key == Key.RIGHT) idx = (idx + 1) % item.options.length;
+                        else idx = (idx - 1 + item.options.length) % item.options.length;
+                        config.set(item.key, item.options[idx]);
+                    } else if (item.type == ConfigManager.SettingType.BOOL) {
+                        String current = config.getValueString(item.key);
+                        config.set(item.key, "true".equals(current) ? "false" : "true");
+                    }
+                }
+            }
+        }
+    }
+
+    /** 计算设置页面当前总行数 */
+    private int resolveTotalRows(List<ConfigManager.SettingSection> sections, boolean[] expanded) {
+        int total = sections.size();
+        for (int i = 0; i < sections.size(); i++) {
+            if (expanded[i]) total += sections.get(i).items.size();
+        }
+        return total;
+    }
+
+    /** 将 flat selectedIndex 解析为 [sectionIdx, itemIdx]，itemIdx=-1 表示板块头 */
+    private int[] resolveSelection(List<ConfigManager.SettingSection> sections, boolean[] expanded, int selectedIndex) {
+        int idx = 0;
+        for (int si = 0; si < sections.size(); si++) {
+            if (idx == selectedIndex) return new int[]{si, -1};
+            idx++;
+            if (expanded[si]) {
+                int itemCount = sections.get(si).items.size();
+                if (selectedIndex < idx + itemCount) {
+                    return new int[]{si, selectedIndex - idx};
+                }
+                idx += itemCount;
+            }
+        }
+        return new int[]{-1, -1};
     }
 
     // ==================== 导航 ====================
@@ -977,6 +1341,8 @@ public class TerminalUI {
             EpubParser parser = new EpubParser();
             currentBook = parser.parse(currentBookPath);
             commandHandler = new CommandHandler(currentBook);
+            commandHandler.setConfig(config);
+            applyPageConfig();
 
             int[] progress = storage.loadProgress(filePath);
             if (progress != null) {
@@ -1190,11 +1556,10 @@ public class TerminalUI {
         int first = readOneChar();
         if (first != 27) return classifyKey(first);
 
-        // ESC 收到 — 轮询等待后续字符
-        int second = pollChar(500);
-        // 支持两种方向键编码: ESC [ X (ANSI) 和 ESC O X (应用模式)
+        // ESC 收到 — 短暂轮询判断是否为方向键序列（现代终端 <10ms 即可送达）
+        int second = pollChar(50);
         if (second == '[' || second == 'O') {
-            int third = pollChar(200);
+            int third = pollChar(50);
             switch (third) {
                 case 'A': return Key.UP;
                 case 'B': return Key.DOWN;
@@ -1213,9 +1578,9 @@ public class TerminalUI {
         int c = readOneChar();
         if (c != 27) return classifyKey(c);
 
-        int second = pollChar(300);
+        int second = pollChar(50);
         if (second == '[' || second == 'O') {
-            pollChar(200);      // 吞掉方向码
+            pollChar(50);      // 吞掉方向码
             return Key.UNKNOWN;
         }
         return Key.ESC;
@@ -1230,9 +1595,9 @@ public class TerminalUI {
         if (c == 9) return Key.TAB;
         if (c != 27) return classifyKey(c);
 
-        int second = pollChar(300);
+        int second = pollChar(50);
         if (second == '[') {
-            int third = pollChar(200);
+            int third = pollChar(50);
             switch (third) {
                 case 'A': return Key.UP;
                 case 'B': return Key.DOWN;
@@ -1241,7 +1606,7 @@ public class TerminalUI {
                 case 'H': return Key.HOME;
                 case 'F': return Key.END;
                 case '3': {   // Delete: ESC [ 3 ~
-                    int fourth = pollChar(100);
+                    int fourth = pollChar(50);
                     if (fourth == '~') return Key.DELETE;
                     return Key.UNKNOWN;
                 }
@@ -1249,7 +1614,7 @@ public class TerminalUI {
             }
         }
         if (second == 'O') {
-            int third = pollChar(200);
+            int third = pollChar(50);
             switch (third) {
                 case 'A': return Key.UP;
                 case 'B': return Key.DOWN;
@@ -1396,8 +1761,11 @@ public class TerminalUI {
 
     /** 扫描 books/ 目录下的 EPUB 文件，按全路径去重后自动添加到书架 */
     private void scanBooksDirectory() {
-        // 尝试多个可能的 books 目录位置
-        String[] candidates = {"books", "../books"};
+        if (!config.isAutoScanBooks()) return;
+
+        // 使用配置中的扫描目录列表
+        List<String> dirs = config.getScanDirectories();
+        String[] candidates = dirs.toArray(new String[0]);
         File booksDir = null;
         for (String candidate : candidates) {
             File dir = new File(candidate);
@@ -1461,6 +1829,14 @@ public class TerminalUI {
             result[i] = new String[]{cmd.getName(), cmd.getDescription()};
         }
         return result;
+    }
+
+    /** 比较实际按键与配置的按键，字母键支持大小写等效 */
+    private static boolean matchesKey(int pressed, int configured) {
+        if (pressed == configured) return true;
+        if (configured >= 'a' && configured <= 'z') return pressed == configured - 32;
+        if (configured >= 'A' && configured <= 'Z') return pressed == configured + 32;
+        return false;
     }
 
     /** 返回 input 到 target 的补全后缀，例如 input="/r", target="/read" → "ead" */

@@ -23,6 +23,8 @@ public enum Command {
 
     // ---- 书架和阅读都可用 ----
     HELP("/help", "显示所有命令帮助", Mode.LIBRARY, Mode.READING),
+    SETTINGS("/settings", "打开设置页面", Mode.LIBRARY, Mode.READING),
+    SET("/set", "设置配置项，用法: /set <属性> <值>", Mode.SETTINGS),
     QUIT("/quit", "退出程序（书架）/ 返回书架（阅读）", Mode.LIBRARY, Mode.READING),
     EXIT("/exit", "退出程序（书架）/ 返回书架（阅读）", Mode.LIBRARY, Mode.READING);
 

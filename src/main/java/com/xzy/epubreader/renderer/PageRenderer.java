@@ -10,7 +10,23 @@ public class PageRenderer {
 
     private int terminalWidth;
     private int terminalHeight;
-    private int pageRows;  // 每页可用行数（总高度 - 状态栏 - 命令条）
+    private int pageRows;  // 每页可用行数（总高度 - bottomMargin）
+
+    // 可配置项（默认值与 config.jsonc 默认值一致）
+    private boolean firstLineIndentEnabled = true;
+    private int bottomMargin = 4;
+
+    public void setFirstLineIndentEnabled(boolean enabled) {
+        this.firstLineIndentEnabled = enabled;
+    }
+
+    /**
+     * 设置页面底部保留行数，限制在 [0, 10]。
+     * 该值影响每页可用行数：pageRows = terminalHeight - bottomMargin。
+     */
+    public void setBottomMargin(int margin) {
+        this.bottomMargin = Math.max(0, Math.min(margin, 10));
+    }
 
     /**
      * 对整本书所有章节分页（初次打开时使用）。
@@ -18,8 +34,8 @@ public class PageRenderer {
     public void render(Book book, int terminalWidth, int terminalHeight) {
         this.terminalWidth = Math.max(terminalWidth, 40);
         this.terminalHeight = Math.max(terminalHeight, 10);
-        // 阅读模式底部 chrome：状态栏(1) + 命令面板边框(2) + 命令输入行(1) = 4 行
-        this.pageRows = Math.max(this.terminalHeight - 4, 3);
+        // 底部保留行数由配置决定，默认 4（状态栏 + 命令面板）
+        this.pageRows = Math.max(this.terminalHeight - bottomMargin, 1);
 
         for (Chapter chapter : book.getChapters()) {
             chapter.clearPages();
@@ -62,7 +78,8 @@ public class PageRenderer {
                 continue;
             }
             // 段首缩进：两个全角空格（U+3000），每个占 2 列，共 4 列
-            wordWrapLine("　　" + para.trim(), allLines);
+            String prefix = firstLineIndentEnabled ? "　　" : "";
+            wordWrapLine(prefix + para.trim(), allLines);
         }
 
         // 第三步：按 pageRows 切分成页面

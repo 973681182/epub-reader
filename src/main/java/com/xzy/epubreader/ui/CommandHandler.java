@@ -1,6 +1,7 @@
 package com.xzy.epubreader.ui;
 
 import com.xzy.epubreader.model.Book;
+import com.xzy.epubreader.storage.ConfigManager;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -11,6 +12,7 @@ import java.util.regex.Pattern;
 public class CommandHandler {
 
     private final Book book;
+    private ConfigManager config;
 
     // 命令匹配模式
     private static final Pattern CMD_GOTO_PAGE = Pattern.compile("^/goto\\s+(\\d+)$");
@@ -21,6 +23,10 @@ public class CommandHandler {
 
     public CommandHandler(Book book) {
         this.book = book;
+    }
+
+    public void setConfig(ConfigManager config) {
+        this.config = config;
     }
 
     public String getLastMessage() {
@@ -79,6 +85,32 @@ public class CommandHandler {
 
             case HELP:
                 return CommandResult.SHOW_HELP;
+
+            case SETTINGS:
+                return CommandResult.SHOW_SETTINGS;
+
+            case SET:
+                if (config == null) {
+                    lastMessage = "配置未加载";
+                    return CommandResult.NONE;
+                }
+                String arg = parts.length > 1 ? parts[1].trim() : "";
+                if (arg.isEmpty()) {
+                    lastMessage = "用法: /set <属性名> <值>  输入 /settings 查看可设置属性";
+                    return CommandResult.NONE;
+                }
+                String[] kv = arg.split("\\s+", 2);
+                if (kv.length < 2) {
+                    lastMessage = "用法: /set " + kv[0] + " <值>";
+                    return CommandResult.NONE;
+                }
+                String err = config.set(kv[0], kv[1]);
+                if (err != null) {
+                    lastMessage = err;
+                    return CommandResult.NONE;
+                }
+                lastMessage = "已设置 " + kv[0] + " = " + kv[1];
+                return CommandResult.SHOW_SETTINGS; // 刷新设置页面
 
             case BACK:
                 lastMessage = "返回书架";

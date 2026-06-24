@@ -9,5 +9,7 @@ public enum Mode {
     /** 命令模式：输入斜杠命令操作当前书籍 */
     COMMAND,
     /** 阅读模式：翻页阅读书籍内容 */
-    READING
+    READING,
+    /** 设置模式：浏览和修改配置 */
+    SETTINGS
 }

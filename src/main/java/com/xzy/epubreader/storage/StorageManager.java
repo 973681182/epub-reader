@@ -95,6 +95,11 @@ public class StorageManager {
         return null;
     }
 
+    /** 返回数据目录路径，供 ConfigManager 等使用 */
+    public Path getDataDir() {
+        return dataDir;
+    }
+
     public void init() throws IOException {
         Files.createDirectories(dataDir);
         Files.createDirectories(progressDir);

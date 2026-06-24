@@ -4,8 +4,12 @@ import com.xzy.epubreader.model.Book;
 import com.xzy.epubreader.model.Chapter;
 import com.xzy.epubreader.model.LibraryEntry;
 import com.xzy.epubreader.renderer.PageRenderer;
+import com.xzy.epubreader.storage.ConfigManager;
+import com.xzy.epubreader.storage.ConfigManager.SettingItem;
+import com.xzy.epubreader.storage.ConfigManager.SettingSection;
 
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -42,17 +46,39 @@ public class ScreenRenderer {
         this.terminalHeight = height;
     }
 
-    // DECSCUSR 光标样式
-    private static final String CURSOR_STYLE  = "\033[2 q";  // 不闪动方块
-    private static final String CURSOR_COLOR  = "\033]12;#c0c0c0\007"; // 亮灰色，与文字颜色协调
+    // DECSCUSR 光标样式（实例字段，由配置决定）
+    private String cursorStyleCode = "\033[2 q";   // 默认不闪动方块
+    private String cursorColorCode = "\033]12;#c0c0c0\007"; // 默认亮灰色
     private static final String CURSOR_RESET  = "\033]112\007\033[0 q"; // 恢复默认颜色和样式
     private static final String CURSOR_HIDE   = "\033[?25l";
     private static final String CURSOR_SHOW   = "\033[?25h";
 
+    // 显示开关（实例字段，由配置决定）
+    private boolean showProgressBar = true;
+    private boolean showCommandPanel = true;
+
+    // ---- 配置 setter ----
+
+    public void setCursorStyleCode(String code) { this.cursorStyleCode = code; }
+    public void setCursorColorCode(String code) { this.cursorColorCode = code; }
+    public void setShowProgressBar(boolean show) { this.showProgressBar = show; }
+    public void setShowCommandPanel(boolean show) { this.showCommandPanel = show; }
+
+    /**
+     * 根据显示开关计算底部保留行数。
+     * 进度条 = 1 行，命令面板（上下边框 + 输入行）= 3 行。
+     */
+    private int getReservedRows() {
+        int rows = 0;
+        if (showProgressBar) rows += 1;
+        if (showCommandPanel) rows += 3;
+        return rows;
+    }
+
     // ==================== 交替屏幕缓冲区 ====================
 
     public void enterAltScreen() {
-        write(ALT_SCREEN_ON + CLEAR_SCREEN + CURSOR_HOME + CURSOR_STYLE + CURSOR_COLOR + CURSOR_HIDE);
+        write(ALT_SCREEN_ON + CLEAR_SCREEN + CURSOR_HOME + cursorStyleCode + cursorColorCode + CURSOR_HIDE);
     }
 
     public void exitAltScreen() {
@@ -94,18 +120,20 @@ public class ScreenRenderer {
             }
         }
 
-        fillRemainingLines(row, terminalHeight - 2);
+        fillRemainingLines(row, showCommandPanel ? terminalHeight - 2 : terminalHeight);
 
-        // 3 行命令面板：上下横线边框 + 中间内容
-        drawCommandPanelFrame();
+        // 命令面板（根据配置决定是否显示）
+        if (showCommandPanel) {
+            drawCommandPanelFrame();
 
-        // 面板内：消息提示 或 未激活命令输入行
-        if (message != null && !message.isEmpty()) {
-            moveCursorTo(terminalHeight - 1, 1);
-            String text = "  " + message;
-            write(isError ? red(padRight(text, terminalWidth)) : green(padRight(text, terminalWidth)));
-        } else {
-            drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]打开 [a]添加 [d]移除 [q]退出");
+            // 面板内：消息提示 或 未激活命令输入行
+            if (message != null && !message.isEmpty()) {
+                moveCursorTo(terminalHeight - 1, 1);
+                String text = "  " + message;
+                write(isError ? red(padRight(text, terminalWidth)) : green(padRight(text, terminalWidth)));
+            } else {
+                drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]打开 [a]添加 [d]移除 [q]退出");
+            }
         }
         write(CURSOR_HIDE);
         flush();
@@ -227,6 +255,127 @@ public class ScreenRenderer {
         drawBottomBar(" 按任意键返回 ");
     }
 
+    /**
+     * 绘制设置页面。
+     *
+     * @param sections      设置板块列表
+     * @param expanded      每个板块是否展开
+     * @param selectedIndex 当前选中行（0-based flat index）
+     * @param config        配置管理器
+     * @param message       底部右侧提示（null 则不显示）
+     * @param isError       消息是否为错误（红色）
+     * @return 当前选中的项名（key），用于 /set 预填；选中板块头时返回 null
+     */
+    public String drawSettingsScreen(List<SettingSection> sections, boolean[] expanded,
+                                      int selectedIndex, ConfigManager config,
+                                      String message, boolean isError) {
+        clearContent();
+        int row = 0;
+
+        // 标题
+        drawLine(row++, centerText(bold("设置")));
+        drawLine(row++, repeat("-", terminalWidth));
+        row++;
+
+        // 构建 flat row → [sectionIdx, itemIdx] 映射（itemIdx=-1=板块头）
+        List<int[]> rowMap = new ArrayList<>();
+        for (int si = 0; si < sections.size(); si++) {
+            rowMap.add(new int[]{si, -1});
+            if (expanded[si]) {
+                for (int ii = 0; ii < sections.get(si).items.size(); ii++) {
+                    rowMap.add(new int[]{si, ii});
+                }
+            }
+        }
+
+        // 值靠右侧居中：值的中心线固定在终端右侧附近
+        int zoneCenter = Math.max(terminalWidth - 10, 20);
+
+        // 绘制板块
+        int screenIdx = 0;
+        for (int si = 0; si < sections.size(); si++) {
+            if (row >= terminalHeight - 4) break;
+            SettingSection sec = sections.get(si);
+            boolean focusedHeader = (screenIdx == selectedIndex);
+
+            // 板块间横线（非第一个板块）
+            if (si > 0) {
+                drawLine(row++, dim(repeat("─", terminalWidth)));
+                if (row >= terminalHeight - 4) break;
+            }
+
+            // 板块头
+            String arrow = expanded[si] ? "▼ " : "▶ ";
+            String headerStr = "  " + arrow + " " + sec.label;
+            if (focusedHeader) {
+                headerStr = REVERSE + headerStr + RESET;
+            }
+            drawLine(row++, headerStr);
+            screenIdx++;
+
+            // 展开的项
+            if (expanded[si]) {
+                for (int ii = 0; ii < sec.items.size(); ii++) {
+                    if (row >= terminalHeight - 4) break;
+                    SettingItem item = sec.items.get(ii);
+                    boolean focusedItem = (screenIdx == selectedIndex);
+                    String value = config.getValueString(item.key);
+
+                    // 值显示（ENUM 和 BOOL 在选中时都用箭头包围）
+                    boolean canToggle = (item.type == ConfigManager.SettingType.ENUM
+                            || item.type == ConfigManager.SettingType.BOOL);
+                    String valueDisplay;
+                    if (canToggle && focusedItem) {
+                        valueDisplay = "◀ " + value + "▶ ";
+                    } else if (canToggle) {
+                        valueDisplay = "  " + value + "  ";
+                    } else {
+                        valueDisplay = value;
+                    }
+
+                    // 值以自身宽度居中于 zoneCenter，不侵入标签区
+                    String labelPart = "    " + item.label;
+                    int valueDW = displayWidth(valueDisplay);
+                    int minStart = displayWidth(labelPart) + 4; // 标签后至少 4 列
+                    int valueStart = Math.max(minStart, zoneCenter - valueDW / 2);
+                    String line = padRightVisual(labelPart, valueStart) + valueDisplay;
+
+                    if (focusedItem) {
+                        line = REVERSE + line + RESET;
+                    }
+                    drawLine(row++, line);
+                    screenIdx++;
+                }
+            }
+        }
+
+        fillRemainingLines(row, showCommandPanel ? terminalHeight - 2 : terminalHeight);
+
+        // 底部命令面板
+        if (showCommandPanel) {
+            drawCommandPanelFrame();
+            if (message != null && !message.isEmpty()) {
+                // 右侧提示 + 左侧通用提示并排
+                drawHintLine(terminalHeight - 1,
+                        "[▲ ▼ ]选择 [Enter]展开/设置 [◀ ▶ ]切换枚举 [Esc]返回",
+                        message, isError);
+            } else {
+                drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]展开/设置 [◀ ▶ ]切换枚举 [Esc]返回");
+            }
+        }
+        write(CURSOR_HIDE);
+        flush();
+
+        // 返回当前选中项的 key（选中板块头返回 null）
+        if (selectedIndex >= 0 && selectedIndex < rowMap.size()) {
+            int[] mapped = rowMap.get(selectedIndex);
+            if (mapped[1] >= 0) {
+                return sections.get(mapped[0]).items.get(mapped[1]).key;
+            }
+        }
+        return null;
+    }
+
     public void drawProgressScreen(Book book) {
         clearContent();
         int row = 0;
@@ -279,6 +428,8 @@ public class ScreenRenderer {
     public void drawReadingMode(Book book) {
         clearContent();
         int row = 0;
+        int reserved = getReservedRows();
+        int contentEnd = terminalHeight - reserved;
 
         Chapter chapter = book.getCurrentChapterObj();
         if (chapter != null) {
@@ -286,7 +437,7 @@ public class ScreenRenderer {
             if (pageContent != null && !pageContent.isEmpty()) {
                 String[] lines = pageContent.split("\n", -1);
                 for (String line : lines) {
-                    if (row >= terminalHeight - 4) break;
+                    if (row >= contentEnd) break;
                     if (line.length() > terminalWidth) {
                         line = line.substring(0, terminalWidth);
                     }
@@ -295,10 +446,28 @@ public class ScreenRenderer {
             }
         }
 
-        fillRemainingLines(row, terminalHeight - 3);
-        drawStatusBar(book);
-        drawCommandPanelFrame();
-        drawInactiveCommandLine("[Enter/空格]下一页 [▲ ]上一页 [Esc]返回书架");
+        // 填充内容与 chrome 之间的空白
+        int fillEnd;
+        if (showCommandPanel && showProgressBar) {
+            fillEnd = terminalHeight - 3;  // 填充到状态栏行之前
+        } else if (showProgressBar) {
+            fillEnd = terminalHeight;       // 状态栏放最底部
+        } else if (showCommandPanel) {
+            fillEnd = terminalHeight - 2;   // 填充到命令面板上边框之前
+        } else {
+            fillEnd = terminalHeight;       // 无 chrome，全屏内容
+        }
+        fillRemainingLines(row, fillEnd);
+
+        // 动态绘制 chrome 组件
+        if (showProgressBar) {
+            drawStatusBar(book);
+        }
+        if (showCommandPanel) {
+            drawCommandPanelFrame();
+            drawInactiveCommandLine("[Enter/空格]下一页 [▲ ]上一页 [Esc]返回书架");
+        }
+
         write(CURSOR_HIDE);
         flush();
     }
@@ -306,7 +475,9 @@ public class ScreenRenderer {
     // ==================== 组件绘制 ====================
 
     private void drawStatusBar(Book book) {
-        moveCursorTo(terminalHeight - 3, 1);
+        // 有命令面板时状态栏在倒数第3行，否则在最后一行
+        int row = showCommandPanel ? terminalHeight - 3 : terminalHeight;
+        moveCursorTo(row, 1);
         write(REVERSE);
 
         int chIdx = book.getCurrentChapter() + 1;
