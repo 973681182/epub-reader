@@ -36,11 +36,13 @@ public class TerminalUI {
     private String libraryMessage = null;
     private boolean libraryMessageIsError = false;
 
-    // 输入历史
-    private final List<String> pathHistory = new ArrayList<>();
-    private int pathHistoryIndex = -1;
-    private String pathHistoryDraft = null;
+    // 确认暂存（添加/删除命令的二次确认）
+    private String pendingConfirmType = null;   // "add" | "delete" | null
+    private String pendingConfirmPath = null;   // add 的文件路径
+    private int pendingConfirmIndex = -1;       // delete 的书架索引
+    private String pendingConfirmTitle = null;  // 确认提示用的书名
 
+    // 输入历史
     private final List<String> commandHistory = new ArrayList<>();
     private int commandHistoryIndex = -1;
     private String commandHistoryDraft = null;
@@ -126,6 +128,7 @@ public class TerminalUI {
     /**
      * 书架模式主循环：显示书籍列表，支持单键操作和行内命令输入。
      * 按 / 激活命令行，Enter 执行命令，Esc 取消命令。
+     * 按 a 自动进入命令模式预填 /add，按 d 预填 /delete。
      */
     private void libraryLoop() throws IOException {
         // 命令输入状态
@@ -153,7 +156,16 @@ public class TerminalUI {
                 String rightHint = null;
                 boolean rightIsError = false;
 
-                if (cmdErrorMessage != null) {
+                // 确认暂存状态时显示确认提示
+                if (pendingConfirmType != null) {
+                    leftHint = "Enter 确认  任意键取消";
+                    if ("add".equals(pendingConfirmType)) {
+                        rightHint = "确认添加《" + pendingConfirmTitle + "》？Enter确认";
+                    } else {
+                        rightHint = "确认删除《" + pendingConfirmTitle + "》？Enter确认";
+                    }
+                    rightIsError = false;
+                } else if (cmdErrorMessage != null) {
                     leftHint = "ESC 退出命令  Enter 重新输入";
                     rightHint = cmdErrorMessage;
                     rightIsError = true;
@@ -163,7 +175,7 @@ public class TerminalUI {
                     leftHint = "ESC 退出命令模式";
                 }
                 String completion = null;
-                if (matches.length > 0) {
+                if (pendingConfirmType == null && matches.length > 0) {
                     int compIdx = matches.length == 1 ? 0 : selectedCmdIndex;
                     if (compIdx >= 0 && compIdx < matches.length) {
                         completion = getCompletionSuffix(cmdInput.toString(), matches[compIdx][0]);
@@ -180,6 +192,37 @@ public class TerminalUI {
             if (key == Key.CTRL_C) { running = false; return; }
 
             if (cmdActive) {
+                // ---- 确认暂存处理（优先于其他按键） ----
+                if (pendingConfirmType != null) {
+                    if (key == Key.ENTER) {
+                        // 执行确认动作
+                        executePendingConfirm();
+                        clearPendingConfirm();
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        cmdActive = false;
+                        selectedCmdIndex = 0;
+                        cmdErrorMessage = null;
+                        commandHistoryIndex = -1;
+                        commandHistoryDraft = null;
+                    } else if (key != Key.UP && key != Key.DOWN && key != Key.LEFT && key != Key.RIGHT
+                            && key != Key.HOME && key != Key.END && key != Key.UNKNOWN) {
+                        // 任意有效按键取消确认（方向键忽略）
+                        clearPendingConfirm();
+                        cmdInput.setLength(0);
+                        cmdCursor = 0;
+                        cmdErrorMessage = null;
+                        commandHistoryIndex = -1;
+                        commandHistoryDraft = null;
+                        // 如果是 ESC，退出命令模式
+                        if (key == Key.ESC) {
+                            cmdActive = false;
+                            selectedCmdIndex = 0;
+                        }
+                    }
+                    continue;
+                }
+
                 // ---- 命令行输入处理 ----
                 if (key == Key.ESC) {
                     // 取消命令输入
@@ -218,19 +261,26 @@ public class TerminalUI {
 
                     commandHistory.add(cmd);
                     handleLibraryCommand(cmd);
-                    // handleLibraryCommand 内部设置 libraryMessage；错误信息已通过该机制处理
-                    // 如果还在书架模式，退出命令模式
+                    // 如果还在书架模式
                     if (mode == Mode.LIBRARY) {
-                        cmdInput.setLength(0);
-                        cmdCursor = 0;
-                        // 根据是否有错误消息决定是否保持命令模式
-                        if (libraryMessage != null && libraryMessageIsError) {
+                        // 检查是否进入了确认暂存状态
+                        if (pendingConfirmType != null) {
+                            cmdInput.setLength(0);
+                            cmdCursor = 0;
+                            selectedCmdIndex = 0;
+                            cmdErrorMessage = null;
+                            // cmdActive 保持 true，等待确认
+                        } else if (libraryMessage != null && libraryMessageIsError) {
+                            cmdInput.setLength(0);
+                            cmdCursor = 0;
                             cmdErrorMessage = libraryMessage;
                             libraryMessage = null;
                             libraryMessageIsError = false;
                             selectedCmdIndex = 0;
-                            // cmdActive 保持 true
+                            // cmdActive 保持 true（错误消息）
                         } else {
+                            cmdInput.setLength(0);
+                            cmdCursor = 0;
                             cmdActive = false;
                             selectedCmdIndex = 0;
                             cmdErrorMessage = null;
@@ -306,10 +356,21 @@ public class TerminalUI {
                     continue;
                 }
                 if (key == Key.TAB) {
-                    String[][] matches = matchCommands(cmdInput.toString());
-                    if (matches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < matches.length) {
-                        cmdInput = new StringBuilder(matches[selectedCmdIndex][0] + " ");
-                        cmdCursor = cmdInput.length();
+                    // /add 命令：路径补全；否则：命令补全
+                    String input = cmdInput.toString();
+                    if (input.startsWith("/add ") && input.length() > 5) {
+                        String pathArg = input.substring(5);
+                        String comp = getPathCompletion(pathArg);
+                        if (comp != null) {
+                            cmdInput.append(comp);
+                            cmdCursor = cmdInput.length();
+                        }
+                    } else {
+                        String[][] matches = matchCommands(input);
+                        if (matches.length > 0 && selectedCmdIndex >= 0 && selectedCmdIndex < matches.length) {
+                            cmdInput = new StringBuilder(matches[selectedCmdIndex][0] + " ");
+                            cmdCursor = cmdInput.length();
+                        }
                     }
                     cmdErrorMessage = null;
                     continue;
@@ -357,11 +418,27 @@ public class TerminalUI {
                     return;
 
                 case 'a': case 'A':
-                    addBookFlow();
+                    // 自动进入命令模式，预填 /add
+                    cmdActive = true;
+                    cmdInput = new StringBuilder("/add ");
+                    cmdCursor = 5;
+                    selectedCmdIndex = 0;
+                    cmdErrorMessage = null;
+                    commandHistoryIndex = -1;
+                    commandHistoryDraft = null;
                     break;
 
                 case 'd': case 'D':
-                    confirmDeleteFlow();
+                    // 自动进入命令模式，预填 /delete 书名
+                    if (librarySelected >= 0 && librarySelected < library.size()) {
+                        cmdActive = true;
+                        cmdInput = new StringBuilder("/delete " + library.get(librarySelected).getTitle());
+                        cmdCursor = cmdInput.length();
+                        selectedCmdIndex = 0;
+                        cmdErrorMessage = null;
+                        commandHistoryIndex = -1;
+                        commandHistoryDraft = null;
+                    }
                     break;
             }
         }
@@ -412,9 +489,107 @@ public class TerminalUI {
                 return;
             }
 
-            case ADD:
-                addBookFlow();
+            case ADD: {
+                String arg = parts.length > 1 ? parts[1].trim() : "";
+                if (arg.isEmpty()) {
+                    libraryMessage = "用法: /add <文件路径>  例如: /add D:\\books\\书.epub";
+                    libraryMessageIsError = true;
+                    return;
+                }
+                // 去掉两端引号
+                if (arg.length() >= 2) {
+                    char first = arg.charAt(0);
+                    char last = arg.charAt(arg.length() - 1);
+                    if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                        arg = arg.substring(1, arg.length() - 1).trim();
+                    }
+                }
+                File file = new File(arg);
+                if (!file.exists() || !file.isFile()) {
+                    libraryMessage = "文件不存在: " + arg;
+                    libraryMessageIsError = true;
+                    return;
+                }
+                String canonical;
+                try { canonical = file.getCanonicalPath(); }
+                catch (IOException e) { canonical = file.getAbsolutePath(); }
+                // 检查重复
+                for (LibraryEntry e : library) {
+                    if (e.getPath().equalsIgnoreCase(canonical)) {
+                        libraryMessage = "该书籍已在书架中";
+                        libraryMessageIsError = true;
+                        return;
+                    }
+                }
+                // 尝试解析书名用于确认提示
+                String displayTitle;
+                try {
+                    EpubParser parser = new EpubParser();
+                    Book book = parser.parse(arg);
+                    displayTitle = book.getTitle();
+                } catch (Exception ex) {
+                    String name = file.getName();
+                    if (name.toLowerCase().endsWith(".epub")) name = name.substring(0, name.length() - 5);
+                    displayTitle = name;
+                }
+                // 暂存确认信息
+                pendingConfirmType = "add";
+                pendingConfirmPath = canonical;
+                pendingConfirmTitle = displayTitle;
                 return;
+            }
+
+            case DELETE: {
+                String arg = parts.length > 1 ? parts[1].trim() : "";
+                if (arg.isEmpty()) {
+                    libraryMessage = "用法: /delete <书名或序号>  例如: /delete 三体";
+                    libraryMessageIsError = true;
+                    return;
+                }
+                if (library.isEmpty()) {
+                    libraryMessage = "书架为空";
+                    libraryMessageIsError = true;
+                    return;
+                }
+                // 尝试按序号匹配
+                try {
+                    int idx = Integer.parseInt(arg);
+                    if (idx < 1 || idx > library.size()) {
+                        libraryMessage = "序号超出范围 (1-" + library.size() + ")";
+                        libraryMessageIsError = true;
+                        return;
+                    }
+                    pendingConfirmType = "delete";
+                    pendingConfirmIndex = idx - 1;
+                    pendingConfirmTitle = library.get(idx - 1).getTitle();
+                    return;
+                } catch (NumberFormatException ignored) {
+                    // 不是序号，尝试按书名匹配
+                }
+                // 按书名模糊匹配（包含即可，大小写不敏感）
+                String lowerArg = arg.toLowerCase();
+                int matchIdx = -1;
+                for (int i = 0; i < library.size(); i++) {
+                    if (library.get(i).getTitle().toLowerCase().contains(lowerArg)) {
+                        if (matchIdx == -1) {
+                            matchIdx = i;
+                        } else {
+                            libraryMessage = "多个匹配: 请用序号指定 (1-" + library.size() + ")";
+                            libraryMessageIsError = true;
+                            return;
+                        }
+                    }
+                }
+                if (matchIdx == -1) {
+                    libraryMessage = "未找到匹配的书籍: " + arg;
+                    libraryMessageIsError = true;
+                    return;
+                }
+                pendingConfirmType = "delete";
+                pendingConfirmIndex = matchIdx;
+                pendingConfirmTitle = library.get(matchIdx).getTitle();
+                return;
+            }
 
             case HELP:
                 screen.drawHelpScreen();
@@ -432,144 +607,26 @@ public class TerminalUI {
         }
     }
 
-    /** 添加书籍流程：支持光标移动、历史记录、Tab 路径补全 */
-    private void addBookFlow() throws IOException {
-        StringBuilder sb = new StringBuilder();
-        int cursorPos = 0;
-
-        while (true) {
-            String completion = getPathCompletion(sb.toString());
-            screen.drawAddBookPrompt(sb.toString(), cursorPos, completion);
-
-            int c = readKeyInput();
-            if (c == Key.ESC) return;
-            if (c == Key.CTRL_C) { running = false; return; }
-            if (c == Key.ENTER) break;
-
-            if (c == Key.BACKSPACE) {
-                if (cursorPos > 0) {
-                    sb.deleteCharAt(cursorPos - 1);
-                    cursorPos--;
-                }
-                continue;
-            }
-
-            if (c == Key.DELETE) {
-                if (cursorPos < sb.length()) {
-                    sb.deleteCharAt(cursorPos);
-                }
-                continue;
-            }
-
-            if (c == Key.LEFT) {
-                if (cursorPos > 0) cursorPos--;
-                continue;
-            }
-
-            if (c == Key.RIGHT) {
-                if (cursorPos < sb.length()) cursorPos++;
-                continue;
-            }
-
-            if (c == Key.HOME) {
-                cursorPos = 0;
-                continue;
-            }
-
-            if (c == Key.END) {
-                cursorPos = sb.length();
-                continue;
-            }
-
-            if (c == Key.UP) {
-                if (!pathHistory.isEmpty()) {
-                    if (pathHistoryIndex == -1) {
-                        pathHistoryDraft = sb.toString();
-                        pathHistoryIndex = pathHistory.size() - 1;
-                    } else if (pathHistoryIndex > 0) {
-                        pathHistoryIndex--;
-                    }
-                    sb = new StringBuilder(pathHistory.get(pathHistoryIndex));
-                    cursorPos = sb.length();
-                }
-                continue;
-            }
-
-            if (c == Key.DOWN) {
-                if (pathHistoryIndex != -1) {
-                    if (pathHistoryIndex < pathHistory.size() - 1) {
-                        pathHistoryIndex++;
-                        sb = new StringBuilder(pathHistory.get(pathHistoryIndex));
-                    } else {
-                        pathHistoryIndex = -1;
-                        sb = new StringBuilder(pathHistoryDraft != null ? pathHistoryDraft : "");
-                        pathHistoryDraft = null;
-                    }
-                    cursorPos = sb.length();
-                }
-                continue;
-            }
-
-            if (c == Key.TAB) {
-                String comp = getPathCompletion(sb.toString());
-                if (comp != null) {
-                    sb.append(comp);
-                    cursorPos = sb.length();
-                }
-                continue;
-            }
-
-            if (c >= 32) {
-                sb.insert(cursorPos, (char) c);
-                cursorPos++;
-            }
-        }
-
-        String path = sb.toString().trim();
-        if (!path.isEmpty()) {
-            // 去掉两端引号（复制路径时常带引号）
-            if (path.length() >= 2) {
-                char first = path.charAt(0);
-                char last = path.charAt(path.length() - 1);
-                if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-                    path = path.substring(1, path.length() - 1).trim();
-                }
-            }
-            addToLibrary(path);
-            // 添加到历史记录
-            pathHistory.add(path);
-            pathHistoryIndex = -1;
-            pathHistoryDraft = null;
+    /** 执行暂存的确认动作（添加或删除） */
+    private void executePendingConfirm() {
+        if ("add".equals(pendingConfirmType) && pendingConfirmPath != null) {
+            addToLibrary(pendingConfirmPath);
+        } else if ("delete".equals(pendingConfirmType) && pendingConfirmIndex >= 0) {
+            String title = library.get(pendingConfirmIndex).getTitle();
+            library.remove(pendingConfirmIndex);
+            if (librarySelected >= library.size()) librarySelected = Math.max(0, library.size() - 1);
+            storage.saveLibrary(library);
+            libraryMessage = "已删除: 《" + title + "》";
+            libraryMessageIsError = false;
         }
     }
 
-    /** 删除确认流程：覆盖底部栏为确认提示，Enter 确认删除，ESC 取消 */
-    private void confirmDeleteFlow() throws IOException {
-        if (library.isEmpty() || librarySelected < 0 || librarySelected >= library.size()) {
-            return;
-        }
-        String title = library.get(librarySelected).getTitle();
-
-        // 重绘书架画面并覆盖底部栏为红色确认提示
-        screen.drawLibraryScreen(library, librarySelected, libraryMessage, libraryMessageIsError);
-        screen.drawDeleteConfirmBar(title);
-
-        while (true) {
-            int key = readKey();
-            if (key == Key.CTRL_C) { running = false; return; }
-            if (key == Key.ENTER) {
-                library.remove(librarySelected);
-                if (librarySelected >= library.size()) librarySelected = Math.max(0, library.size() - 1);
-                storage.saveLibrary(library);
-                libraryMessage = "已删除: 《" + title + "》";
-                libraryMessageIsError = false;
-                return;
-            }
-            if (key == Key.ESC) {
-                return;
-            }
-            // 其他按键忽略
-        }
+    /** 清除确认暂存状态 */
+    private void clearPendingConfirm() {
+        pendingConfirmType = null;
+        pendingConfirmPath = null;
+        pendingConfirmIndex = -1;
+        pendingConfirmTitle = null;
     }
 
     // ==================== COMMAND 模式 ====================

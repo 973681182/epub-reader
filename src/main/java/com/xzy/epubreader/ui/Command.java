@@ -19,6 +19,7 @@ public enum Command {
     // ---- 书架时可用（在书架页面按 / 打开命令行） ----
     READ_SHELF("/read", "打开书架中指定序号的书籍", Mode.LIBRARY),
     ADD("/add", "添加 EPUB 文件到书架", Mode.LIBRARY),
+    DELETE("/delete", "从书架移除书籍", Mode.LIBRARY),
 
     // ---- 书架和阅读都可用 ----
     HELP("/help", "显示所有命令帮助", Mode.LIBRARY, Mode.READING),

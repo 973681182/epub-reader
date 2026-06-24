@@ -104,26 +104,6 @@ public class ScreenRenderer {
     }
 
     /**
-     * 绘制添加文件的提示画面。
-     */
-    public void drawAddBookPrompt(String inputSoFar, int cursorPos, String completionHint) {
-        clearContent();
-        int row = 0;
-
-        drawLine(row++, bold("添加 EPUB 文件"));
-        drawLine(row++, repeat("-", terminalWidth));
-        row++;
-        drawLine(row++, "  请输入 EPUB 文件的完整路径:");
-        drawLine(row++, dim("  例如: D:\\books\\三体.epub"));
-        row++;
-
-        fillRemainingLines(row);
-
-        // 输入栏（带光标定位和补全提示）
-        drawInputBarWithCompletion(inputSoFar, cursorPos, completionHint);
-    }
-
-    /**
      * 绘制正在加载画面。
      */
     public void drawLoadingScreen(String filePath) {
@@ -505,44 +485,16 @@ public class ScreenRenderer {
     }
 
     /** 在命令面板内显示临时消息（用于命令错误提示等），等待按键后由调用方清除 */
-    public void drawMessageBar(String message, boolean isError) {
+    /** 命令模式输入行重绘：只更新最底行，不清屏 */
+    public void redrawCommandLine(String input, int cursorPos, String completion) {
         moveCursorTo(terminalHeight - 1, 1);
-        String text = "  " + message;
-        write(isError ? red(padRight(text, terminalWidth)) : dim(padRight(text, terminalWidth)));
-        flush();
-    }
-
-    /** 输入栏：青色提示符 + 用户输入 + 灰色补全提示，光标定位到正确位置（面板内） */
-    private void drawInputBarWithCompletion(String input, int cursorPos, String completion) {
-        moveCursorTo(terminalHeight - 1, 1);
-        write("\033[K");  // 先清除整行
+        write("\033[K");
         write(CYAN + "> " + RESET);
         write(input);
         if (completion != null && !completion.isEmpty()) {
             write(hint(completion));
         }
-        // 将终端光标移到用户输入中的正确位置
         moveCursorTo(terminalHeight - 1, 3 + cursorPos);
-        flush();
-    }
-
-    /** 命令模式输入行重绘：只更新最底行，不清屏 */
-    public void redrawCommandLine(String input, int cursorPos, String completion) {
-        drawInputBarWithCompletion(input, cursorPos, completion);
-    }
-
-    /** 删除确认栏：在命令面板内用红色显示确认提示 */
-    public void drawDeleteConfirmBar(String bookTitle) {
-        moveCursorTo(terminalHeight - 2, 1);
-        write(" ".repeat(terminalWidth));
-        moveCursorTo(terminalHeight - 1, 1);
-        String hint = " 确认删除《" + bookTitle + "》？ [Enter]确认 [ESC]取消 ";
-        if (hint.length() > terminalWidth) {
-            hint = hint.substring(0, terminalWidth);
-        }
-        write(red(padRight(hint, terminalWidth)));
-        moveCursorTo(terminalHeight, 1);
-        write(" ".repeat(terminalWidth));
         flush();
     }
 
