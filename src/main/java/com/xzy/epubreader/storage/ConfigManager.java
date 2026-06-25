@@ -33,6 +33,32 @@ public class ConfigManager {
     private static final Set<String> VALID_CURSOR_STYLES =
             new HashSet<>(Arrays.asList("block", "underline", "bar"));
 
+    /** 光标颜色预设：显示名（设置页面用）和对应的 hex 值 */
+    private static final String[] CURSOR_COLOR_LABELS = {
+            "亮灰色", "白色", "酸橙绿", "深天蓝", "金色", "番茄红", "热粉红"
+    };
+    private static final String[] CURSOR_COLOR_VALUES = {
+            "#c0c0c0", "#ffffff", "#32cd32", "#00bfff", "#ffd700", "#ff6347", "#ff69b4"
+    };
+
+    /** 将显示名或 hex 统一转为 hex；无法识别时返回原值 */
+    private static String resolveCursorColor(String name) {
+        if (name == null) return null;
+        for (int i = 0; i < CURSOR_COLOR_LABELS.length; i++) {
+            if (CURSOR_COLOR_LABELS[i].equals(name)) return CURSOR_COLOR_VALUES[i];
+        }
+        return name; // 可能是 hex，交给 setCursorColor 的 regex 校验
+    }
+
+    /** 将 hex 转回中文显示名，未匹配时返回原 hex */
+    private static String cursorColorToLabel(String hex) {
+        if (hex == null) return DEFAULT_CURSOR_COLOR;
+        for (int i = 0; i < CURSOR_COLOR_VALUES.length; i++) {
+            if (CURSOR_COLOR_VALUES[i].equalsIgnoreCase(hex)) return CURSOR_COLOR_LABELS[i];
+        }
+        return hex; // 自定义 hex 值，原样显示
+    }
+
     // ==================== 按键默认值 ====================
 
     private static final Set<Integer> DEFAULT_NEXT_PAGE =
@@ -272,7 +298,7 @@ public class ConfigManager {
                     setCursorStyle(value);
                     break;
                 case "cursorColor":
-                    setCursorColor(value);
+                    setCursorColor(resolveCursorColor(value));
                     break;
                 case "showProgressBar":
                     if (!isBool(value)) return "值应为 true 或 false";
@@ -360,7 +386,7 @@ public class ConfigManager {
         SettingSection display = new SettingSection("display", "显示设置");
         display.add(new SettingItem("cursorStyle", "光标样式", SettingType.ENUM,
                 new String[]{"block", "underline", "bar"}));
-        display.add(new SettingItem("cursorColor", "光标颜色", SettingType.COLOR));
+        display.add(new SettingItem("cursorColor", "光标颜色", SettingType.ENUM, CURSOR_COLOR_LABELS));
         display.add(new SettingItem("showProgressBar", "进度条", SettingType.BOOL));
         display.add(new SettingItem("showCommandPanel", "命令面板", SettingType.BOOL));
         sections.add(display);
@@ -380,7 +406,7 @@ public class ConfigManager {
             case "firstLineIndent":    return String.valueOf(isFirstLineIndent());
             case "bottomMargin":       return String.valueOf(getBottomMargin());
             case "cursorStyle":        return getCursorStyle();
-            case "cursorColor":        return getCursorColor();
+            case "cursorColor":        return cursorColorToLabel(getCursorColor());
             case "showProgressBar":    return String.valueOf(isShowProgressBar());
             case "showCommandPanel":   return String.valueOf(isShowCommandPanel());
             case "autoScanBooks":      return String.valueOf(isAutoScanBooks());

@@ -64,6 +64,12 @@ public class ScreenRenderer {
     public void setShowProgressBar(boolean show) { this.showProgressBar = show; }
     public void setShowCommandPanel(boolean show) { this.showCommandPanel = show; }
 
+    /** 立即将当前光标样式和颜色发送到终端（配置变更后调用，无需重启） */
+    public void flushCursorStyle() {
+        write(cursorStyleCode + cursorColorCode);
+        flush();
+    }
+
     /**
      * 根据显示开关计算底部保留行数。
      * 进度条 = 1 行，命令面板（上下边框 + 输入行）= 3 行。
@@ -132,7 +138,7 @@ public class ScreenRenderer {
                 String text = "  " + message;
                 write(isError ? red(padRight(text, terminalWidth)) : green(padRight(text, terminalWidth)));
             } else {
-                drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]打开 [a]添加 [d]移除 [q]退出");
+                drawInactiveCommandLine("[▲ ▼ ]选择 [Enter]打开 [a]添加 [d]移除 [q/Esc]退出");
             }
         }
         write(CURSOR_HIDE);

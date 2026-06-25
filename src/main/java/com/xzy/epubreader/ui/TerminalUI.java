@@ -164,6 +164,12 @@ public class TerminalUI {
         pageRenderer.setFirstLineIndentEnabled(config.isFirstLineIndent());
     }
 
+    /** 配置变更后立即刷新显示：光标样式/颜色立即生效，显示开关同步到 ScreenRenderer */
+    private void refreshDisplayConfig() {
+        applyDisplayConfigToScreen();
+        screen.flushCursorStyle();
+    }
+
     // ==================== LIBRARY 模式 ====================
 
     /**
@@ -447,7 +453,7 @@ public class TerminalUI {
                 if (librarySelected > 0) librarySelected--;
             } else if (key == config.getLibrarySelectDownKey()) {
                 if (librarySelected < library.size() - 1) librarySelected++;
-            } else if (matchesKey(key, config.getLibraryQuitKey())) {
+            } else if (matchesKey(key, config.getLibraryQuitKey()) || key == Key.ESC) {
                 running = false;
                 return;
             } else if (matchesKey(key, config.getLibraryQuickAddKey())) {
@@ -1030,6 +1036,9 @@ public class TerminalUI {
         String cmdErrorMessage = null;
         String cmdSuccessMsg = null; // /set 成功提示，显示在命令区域右侧
 
+        // 进入设置时同步显示配置（处理从 READING/LIBRARY 模式 /set 后进入的情况）
+        refreshDisplayConfig();
+
         while (mode == Mode.SETTINGS && running) {
             updateTerminalSize();
 
@@ -1126,6 +1135,7 @@ public class TerminalUI {
                                 cmdInput.setLength(0);
                                 cmdCursor = 0;
                                 selectedCmdIndex = 0;
+                                refreshDisplayConfig();
                             }
                         } else {
                             cmdErrorMessage = "用法: /set <属性名> <值>";
@@ -1223,6 +1233,11 @@ public class TerminalUI {
             // ---- 设置模式按键处理 ----
             if (key == Key.ESC) {
                 mode = prevMode;
+                // 返回阅读模式时，重新应用页面配置并分页（缩进/边距变更即时生效）
+                if (prevMode == Mode.READING && currentBook != null) {
+                    applyPageConfig();
+                    pageRenderer.render(currentBook, terminal.getWidth(), terminal.getHeight());
+                }
                 return;
             }
 
@@ -1277,9 +1292,11 @@ public class TerminalUI {
                         if (key == Key.RIGHT) idx = (idx + 1) % item.options.length;
                         else idx = (idx - 1 + item.options.length) % item.options.length;
                         config.set(item.key, item.options[idx]);
+                        refreshDisplayConfig();
                     } else if (item.type == ConfigManager.SettingType.BOOL) {
                         String current = config.getValueString(item.key);
                         config.set(item.key, "true".equals(current) ? "false" : "true");
+                        refreshDisplayConfig();
                     }
                 }
             }
