@@ -147,15 +147,19 @@ public class TerminalUI {
         String colorAnsi = "\033]12;" + config.getCursorColor() + "\007";
         screen.setCursorStyleCode(cursorAnsi);
         screen.setCursorColorCode(colorAnsi);
-        screen.setShowProgressBar(config.isShowProgressBar());
+        screen.setProgressBarPosition(config.getProgressBarPosition());
         screen.setShowCommandPanel(config.isShowCommandPanel());
     }
 
     /** 将页面相关配置应用到 PageRenderer（缩进、底部边距） */
     private void applyPageConfig() {
-        // 计算 chrome 实际需要的行数
+        // 计算 chrome 实际需要的行数（含顶部标题栏）
         int fromChrome = 0;
-        if (config.isShowProgressBar()) fromChrome += 1;
+        if ("top".equals(config.getProgressBarPosition())) {
+            fromChrome += 2;           // 顶部标题栏 + 空行
+        } else if ("bottom".equals(config.getProgressBarPosition())) {
+            fromChrome += 1;           // 底部标题栏
+        }
         if (config.isShowCommandPanel()) fromChrome += 3;
         // effectiveBottomMargin 取 chrome 需求与用户配置的较大值，保证内容不被遮挡
         int effective = Math.max(fromChrome, config.getBottomMargin());

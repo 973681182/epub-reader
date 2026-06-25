@@ -54,14 +54,14 @@ public class ScreenRenderer {
     private static final String CURSOR_SHOW   = "\033[?25h";
 
     // 显示开关（实例字段，由配置决定）
-    private boolean showProgressBar = true;
+    private String progressBarPosition = "bottom";  // "top" / "bottom" / "hidden"
     private boolean showCommandPanel = true;
 
     // ---- 配置 setter ----
 
     public void setCursorStyleCode(String code) { this.cursorStyleCode = code; }
     public void setCursorColorCode(String code) { this.cursorColorCode = code; }
-    public void setShowProgressBar(boolean show) { this.showProgressBar = show; }
+    public void setProgressBarPosition(String position) { this.progressBarPosition = position; }
     public void setShowCommandPanel(boolean show) { this.showCommandPanel = show; }
 
     /** 立即将当前光标样式和颜色发送到终端（配置变更后调用，无需重启） */
@@ -72,11 +72,11 @@ public class ScreenRenderer {
 
     /**
      * 根据显示开关计算底部保留行数。
-     * 进度条 = 1 行，命令面板（上下边框 + 输入行）= 3 行。
+     * 进度条在底部时占 1 行，命令面板（上下边框 + 输入行）= 3 行。
      */
     private int getReservedRows() {
         int rows = 0;
-        if (showProgressBar) rows += 1;
+        if ("bottom".equals(progressBarPosition)) rows += 1;
         if (showCommandPanel) rows += 3;
         return rows;
     }
@@ -103,8 +103,8 @@ public class ScreenRenderer {
         clearContent();
         int row = 0;
 
-        drawLine(row++, centerText(bold("EPUB 书架")));
-        drawLine(row++, repeat("-", terminalWidth));
+        String rightText = entries.isEmpty() ? null : "共 " + entries.size() + " 本";
+        drawHeaderBar(row++, "EPUB 书架", rightText);
         row++;
 
         if (entries.isEmpty()) {
@@ -279,8 +279,7 @@ public class ScreenRenderer {
         int row = 0;
 
         // 标题
-        drawLine(row++, centerText(bold("设置")));
-        drawLine(row++, repeat("-", terminalWidth));
+        drawHeaderBar(row++, "设置", null);
         row++;
 
         // 构建 flat row → [sectionIdx, itemIdx] 映射（itemIdx=-1=板块头）
@@ -434,8 +433,16 @@ public class ScreenRenderer {
     public void drawReadingMode(Book book) {
         clearContent();
         int row = 0;
+        boolean showBar = !"hidden".equals(progressBarPosition);
+        boolean barOnTop = "top".equals(progressBarPosition);
         int reserved = getReservedRows();
         int contentEnd = terminalHeight - reserved;
+
+        // 进度条在顶部时：先绘制标题栏，内容下移 2 行
+        if (showBar && barOnTop) {
+            drawStatusBar(book, 0);
+            row += 2;
+        }
 
         Chapter chapter = book.getCurrentChapterObj();
         if (chapter != null) {
@@ -452,11 +459,11 @@ public class ScreenRenderer {
             }
         }
 
-        // 填充内容与 chrome 之间的空白
+        // 填充内容与底部 chrome 之间的空白
         int fillEnd;
-        if (showCommandPanel && showProgressBar) {
+        if (showCommandPanel && showBar && !barOnTop) {
             fillEnd = terminalHeight - 3;  // 填充到状态栏行之前
-        } else if (showProgressBar) {
+        } else if (showBar && !barOnTop) {
             fillEnd = terminalHeight;       // 状态栏放最底部
         } else if (showCommandPanel) {
             fillEnd = terminalHeight - 2;   // 填充到命令面板上边框之前
@@ -465,9 +472,10 @@ public class ScreenRenderer {
         }
         fillRemainingLines(row, fillEnd);
 
-        // 动态绘制 chrome 组件
-        if (showProgressBar) {
-            drawStatusBar(book);
+        // 动态绘制底部 chrome 组件
+        if (showBar && !barOnTop) {
+            int barRow0 = showCommandPanel ? terminalHeight - 4 : terminalHeight - 1;
+            drawStatusBar(book, barRow0);
         }
         if (showCommandPanel) {
             drawCommandPanelFrame();
@@ -480,21 +488,59 @@ public class ScreenRenderer {
 
     // ==================== 组件绘制 ====================
 
-    private void drawStatusBar(Book book) {
-        // 有命令面板时状态栏在倒数第3行，否则在最后一行
-        int row = showCommandPanel ? terminalHeight - 3 : terminalHeight;
-        moveCursorTo(row, 1);
+    /**
+     * 绘制区块背景标题栏（反色背景 + Unicode 制表符边框）。
+     * 格式：┌─ 左侧文字 ─────────── 右侧文字 ─┐
+     *
+     * @param row       行号（0-based，与 drawLine 一致）
+     * @param leftText  左侧文字
+     * @param rightText 右侧文字（可为 null，此时左边直接延伸到右边界）
+     */
+    private void drawHeaderBar(int row, String leftText, String rightText) {
+        if (row >= terminalHeight) return;
+        moveCursorTo(row + 1, 1);
         write(REVERSE);
 
+        StringBuilder sb = new StringBuilder();
+        sb.append("┌─ ");
+        sb.append(leftText);
+        sb.append(" ");
+        int usedDW = 1 + 2 + displayWidth(leftText) + 1; // ┌ + "─ " + 文字 + " "
+
+        if (rightText != null && !rightText.isEmpty()) {
+            String rightSegment = " " + rightText + " ─┐";
+            int rightDW = displayWidth(rightSegment);
+            int fill = terminalWidth - usedDW - rightDW;
+            if (fill > 0) {
+                sb.append("─".repeat(fill));
+            }
+            sb.append(rightSegment);
+        } else {
+            int fill = terminalWidth - usedDW - 1; // -1 为右角 ┐
+            if (fill > 0) {
+                sb.append("─".repeat(fill));
+            }
+            sb.append("┐");
+        }
+
+        write(padRightVisual(sb.toString(), terminalWidth));
+        write(RESET);
+    }
+
+    /**
+     * 绘制阅读模式状态栏。位置由调用方通过 row0 参数指定。
+     * @param book 当前书籍
+     * @param row0 目标行号（0-based）
+     */
+    private void drawStatusBar(Book book, int row0) {
         int chIdx = book.getCurrentChapter() + 1;
         int curPage = book.getCurrentPage() + 1;
         int totalChPages = book.getCurrentChapterPageCount();
         double pct = book.getProgressPercent();
 
-        String status = String.format(" 第%d章 %s · 页 %d/%d · 全书 %.1f%% ",
-                chIdx, book.getCurrentChapterTitle(), curPage, totalChPages, pct);
-        write(padRight(status, terminalWidth));
-        write(RESET);
+        String leftText = "第" + chIdx + "章 " + book.getCurrentChapterTitle();
+        String rightText = "页 " + curPage + "/" + totalChPages + " · " + String.format("%.1f%%", pct);
+        drawHeaderBar(row0, leftText, rightText);
     }
 
     private void drawCommandBar() {

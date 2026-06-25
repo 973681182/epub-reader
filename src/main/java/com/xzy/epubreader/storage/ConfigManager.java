@@ -23,7 +23,7 @@ public class ConfigManager {
     private static final int DEFAULT_BOTTOM_MARGIN = 4;
     private static final String DEFAULT_CURSOR_STYLE = "block";
     private static final String DEFAULT_CURSOR_COLOR = "#c0c0c0";
-    private static final boolean DEFAULT_SHOW_PROGRESS_BAR = true;
+    private static final String DEFAULT_PROGRESS_BAR_POSITION = "bottom";
     private static final boolean DEFAULT_SHOW_COMMAND_PANEL = true;
     private static final boolean DEFAULT_AUTO_SCAN_BOOKS = true;
     private static final List<String> DEFAULT_SCAN_DIRECTORIES = Collections.singletonList("books");
@@ -32,6 +32,13 @@ public class ConfigManager {
 
     private static final Set<String> VALID_CURSOR_STYLES =
             new HashSet<>(Arrays.asList("block", "underline", "bar"));
+
+    private static final Set<String> VALID_PROGRESS_BAR_POSITIONS =
+            new HashSet<>(Arrays.asList("top", "bottom", "hidden"));
+
+    /** 进度条位置预设：内部值 → 设置页面显示名 */
+    private static final String[] PROGRESS_BAR_POSITION_LABELS = {"上方", "下方", "隐藏"};
+    private static final String[] PROGRESS_BAR_POSITION_VALUES = {"top", "bottom", "hidden"};
 
     /** 光标颜色预设：显示名（设置页面用）和对应的 hex 值 */
     private static final String[] CURSOR_COLOR_LABELS = {
@@ -57,6 +64,26 @@ public class ConfigManager {
             if (CURSOR_COLOR_VALUES[i].equalsIgnoreCase(hex)) return CURSOR_COLOR_LABELS[i];
         }
         return hex; // 自定义 hex 值，原样显示
+    }
+
+    /** 将进度条位置显示名转为内部值（"上方"→"top" 等）；无法识别时返回默认值 */
+    private static String resolveProgressBarPosition(String label) {
+        if (label == null) return DEFAULT_PROGRESS_BAR_POSITION;
+        for (int i = 0; i < PROGRESS_BAR_POSITION_LABELS.length; i++) {
+            if (PROGRESS_BAR_POSITION_LABELS[i].equals(label)) return PROGRESS_BAR_POSITION_VALUES[i];
+        }
+        // 可能是内部值直接传入（"/set progressBarPosition top"），校验通过则原样返回
+        if (VALID_PROGRESS_BAR_POSITIONS.contains(label)) return label;
+        return DEFAULT_PROGRESS_BAR_POSITION;
+    }
+
+    /** 将进度条位置内部值转为中文显示名 */
+    private static String progressBarPositionToLabel(String value) {
+        if (value == null) return "下方";
+        for (int i = 0; i < PROGRESS_BAR_POSITION_VALUES.length; i++) {
+            if (PROGRESS_BAR_POSITION_VALUES[i].equals(value)) return PROGRESS_BAR_POSITION_LABELS[i];
+        }
+        return "下方";
     }
 
     // ==================== 按键默认值 ====================
@@ -142,9 +169,22 @@ public class ConfigManager {
         return val;
     }
 
-    /** 是否显示底部反色进度条，默认 true */
-    public boolean isShowProgressBar() {
-        return getNestedBoolean("display", "showProgressBar", DEFAULT_SHOW_PROGRESS_BAR);
+    /** 进度条位置："top" / "bottom" / "hidden"，默认 "bottom"。
+     *  向后兼容：新键缺失时检查旧的 showProgressBar 布尔键（false→hidden）。 */
+    public String getProgressBarPosition() {
+        String val = getNestedString("display", "progressBarPosition", null);
+        if (val != null && VALID_PROGRESS_BAR_POSITIONS.contains(val)) {
+            return val;
+        }
+        // 向后兼容旧配置：showProgressBar: false → hidden
+        Map<String, Object> sec = getSection("display");
+        if (sec != null && sec.containsKey("showProgressBar")) {
+            Object old = sec.get("showProgressBar");
+            if (old instanceof Boolean && !((Boolean) old)) {
+                return "hidden";
+            }
+        }
+        return DEFAULT_PROGRESS_BAR_POSITION;
     }
 
     /** 是否显示底部命令面板（上下边框 + 命令输入行），默认 true */
@@ -236,8 +276,13 @@ public class ConfigManager {
         }
     }
 
-    public void setShowProgressBar(boolean value) {
-        setNested("display", "showProgressBar", value);
+    public void setProgressBarPosition(String value) {
+        if (value != null && VALID_PROGRESS_BAR_POSITIONS.contains(value)) {
+            setNested("display", "progressBarPosition", value);
+            // 清理旧键，避免 config.jsonc 中同时存在新旧两个键
+            Map<String, Object> sec = getSection("display");
+            if (sec != null) sec.remove("showProgressBar");
+        }
     }
 
     public void setShowCommandPanel(boolean value) {
@@ -300,9 +345,8 @@ public class ConfigManager {
                 case "cursorColor":
                     setCursorColor(resolveCursorColor(value));
                     break;
-                case "showProgressBar":
-                    if (!isBool(value)) return "值应为 true 或 false";
-                    setShowProgressBar(Boolean.parseBoolean(value));
+                case "progressBarPosition":
+                    setProgressBarPosition(resolveProgressBarPosition(value));
                     break;
                 case "showCommandPanel":
                     if (!isBool(value)) return "值应为 true 或 false";
@@ -387,7 +431,8 @@ public class ConfigManager {
         display.add(new SettingItem("cursorStyle", "光标样式", SettingType.ENUM,
                 new String[]{"block", "underline", "bar"}));
         display.add(new SettingItem("cursorColor", "光标颜色", SettingType.ENUM, CURSOR_COLOR_LABELS));
-        display.add(new SettingItem("showProgressBar", "进度条", SettingType.BOOL));
+        display.add(new SettingItem("progressBarPosition", "进度条位置", SettingType.ENUM,
+                PROGRESS_BAR_POSITION_LABELS));
         display.add(new SettingItem("showCommandPanel", "命令面板", SettingType.BOOL));
         sections.add(display);
 
@@ -407,7 +452,7 @@ public class ConfigManager {
             case "bottomMargin":       return String.valueOf(getBottomMargin());
             case "cursorStyle":        return getCursorStyle();
             case "cursorColor":        return cursorColorToLabel(getCursorColor());
-            case "showProgressBar":    return String.valueOf(isShowProgressBar());
+            case "progressBarPosition": return progressBarPositionToLabel(getProgressBarPosition());
             case "showCommandPanel":   return String.valueOf(isShowCommandPanel());
             case "autoScanBooks":      return String.valueOf(isAutoScanBooks());
             case "confirmDelete":      return String.valueOf(isConfirmDelete());
