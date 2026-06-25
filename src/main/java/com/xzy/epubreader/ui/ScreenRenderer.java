@@ -199,12 +199,8 @@ public class ScreenRenderer {
     }
 
     public void drawTocScreen(Book book) {
-        clearContent();
-        int row = 0;
-
-        drawLine(row++, bold("章节目录"));
-        drawLine(row++, repeat("-", terminalWidth));
-        row++;
+        List<String> lines = new ArrayList<>();
+        int available = terminalHeight - OVERLAY_BOTTOM_ROWS - 1; // -1 for title row
 
         for (int i = 0; i < book.getChapterCount(); i++) {
             Chapter ch = book.getChapter(i);
@@ -213,52 +209,61 @@ public class ScreenRenderer {
             if (text.length() > terminalWidth) {
                 text = text.substring(0, terminalWidth - 3) + "...";
             }
-            drawLine(row++, text);
-            if (row >= terminalHeight - 2) {
-                drawLine(row++, dim("  ... 共 " + book.getChapterCount() + " 章"));
+            if (lines.size() >= available - 1) {
+                lines.add(dim("  ... 共 " + book.getChapterCount() + " 章"));
                 break;
             }
+            lines.add(text);
         }
 
-        fillRemainingLines(row);
-        drawBottomBar(" 按任意键返回 ");
+        renderOverlay("章节目录", lines);
     }
 
     public void drawHelpScreen() {
-        clearContent();
-        int row = 0;
+        List<String> lines = new ArrayList<>();
 
-        drawLine(row++, bold("命令帮助"));
-        drawLine(row++, repeat("-", terminalWidth));
-        row++;
+        int halfW = (terminalWidth - 3) / 2;  // 3 for " │ " separator
+        int descW = Math.max(5, halfW - 2 - 14 - 1);  // 2 indent + 14 name + 1 space
+        int available = terminalHeight - OVERLAY_BOTTOM_ROWS - 1; // -1 for title row
 
-        drawLine(row++, bold("  阅读模式命令:"));
-        for (Command cmd : Command.values()) {
-            if (!cmd.isAvailableIn(Mode.READING)) {
-                continue;
-            }
-            if (row >= terminalHeight - 10) break;
-            drawLine(row++, String.format("  %-14s %s", cyan(cmd.getName()), dim(cmd.getDescription())));
+        // 双栏标题行
+        lines.add(padRightVisual(bold("  阅读模式命令:"), halfW) + " │ " + bold("书架模式命令:"));
+
+        // 收集两侧命令
+        List<Command> readingCmds = Command.forMode(Mode.READING);
+        List<Command> libraryCmds = Command.forMode(Mode.LIBRARY);
+        int maxRows = Math.max(readingCmds.size(), libraryCmds.size());
+
+        for (int i = 0; i < maxRows; i++) {
+            if (lines.size() >= available - 5) break;  // 留 5 行给按键说明
+            String left = i < readingCmds.size() ? formatHelpCmd(readingCmds.get(i), descW) : "";
+            String right = i < libraryCmds.size() ? formatHelpCmd(libraryCmds.get(i), descW) : "";
+            lines.add(padRightVisual(left, halfW) + " │ " + right);
         }
 
-        row++;
-        drawLine(row++, bold("  书架模式命令:"));
-        for (Command cmd : Command.values()) {
-            if (!cmd.isAvailableIn(Mode.LIBRARY)) {
-                continue;
-            }
-            if (row >= terminalHeight - 3) break;
-            drawLine(row++, String.format("  %-14s %s", cyan(cmd.getName()), dim(cmd.getDescription())));
+        // 按键说明（全宽）
+        if (lines.size() < available - 4) lines.add("");
+        if (lines.size() < available) lines.add(dim("  阅读模式按键:"));
+        if (lines.size() < available) lines.add(dim("  Enter / 空格 / ▼ / ▶ = 下一页    ▲ / ◀ = 上一页"));
+        if (lines.size() < available) lines.add(dim("  / = 输入命令（书架/阅读模式通用）"));
+        if (lines.size() < available) lines.add(dim("  Esc = 返回书架（阅读模式）/ 取消命令输入"));
+
+        // 截断超出的行
+        if (lines.size() > available) {
+            lines = new ArrayList<>(lines.subList(0, available));
         }
 
-        row++;
-        drawLine(row++, dim("  阅读模式按键:"));
-        drawLine(row++, dim("  Enter / 空格 / ▼  / ▶  = 下一页    ▲  / ◀  = 上一页"));
-        drawLine(row++, dim("  / = 输入命令（书架/阅读模式通用）"));
-        drawLine(row++, dim("  Esc = 返回书架（阅读模式）/ 取消命令输入"));
+        renderOverlay("命令帮助", lines);
+    }
 
-        fillRemainingLines(row);
-        drawBottomBar(" 按任意键返回 ");
+    /** 格式化单条命令为侧栏条目："  /cmdname      描述…" */
+    private String formatHelpCmd(Command cmd, int descW) {
+        String name = padRightVisual(cyan(cmd.getName()), 14);
+        String desc = cmd.getDescription();
+        if (displayWidth(desc) > descW) {
+            desc = truncateToWidth(desc, descW - 1) + "…";
+        }
+        return "  " + name + " " + dim(desc);
     }
 
     /**
@@ -382,18 +387,13 @@ public class ScreenRenderer {
     }
 
     public void drawProgressScreen(Book book) {
-        clearContent();
-        int row = 0;
-
-        drawLine(row++, bold("阅读进度"));
-        drawLine(row++, repeat("-", terminalWidth));
-        row++;
-        drawLine(row++, String.format("  书名: %s", book.getTitle()));
-        drawLine(row++, String.format("  当前章节: 第%d章 %s", book.getCurrentChapter() + 1, book.getCurrentChapterTitle()));
-        drawLine(row++, String.format("  章节内页码: %d / %d", book.getCurrentPage() + 1, book.getCurrentChapterPageCount()));
-        drawLine(row++, String.format("  全书页码: %d / %d", book.getCurrentGlobalPage() + 1, book.getTotalPages()));
-        drawLine(row++, String.format("  进度: %.1f%%", book.getProgressPercent()));
-        row++;
+        List<String> lines = new ArrayList<>();
+        lines.add(String.format("  书名: %s", book.getTitle()));
+        lines.add(String.format("  当前章节: 第%d章 %s", book.getCurrentChapter() + 1, book.getCurrentChapterTitle()));
+        lines.add(String.format("  章节内页码: %d / %d", book.getCurrentPage() + 1, book.getCurrentChapterPageCount()));
+        lines.add(String.format("  全书页码: %d / %d", book.getCurrentGlobalPage() + 1, book.getTotalPages()));
+        lines.add(String.format("  进度: %.1f%%", book.getProgressPercent()));
+        lines.add("");
 
         double pct = book.getProgressPercent();
         int barWidth = terminalWidth - 4;
@@ -403,29 +403,22 @@ public class ScreenRenderer {
             bar.append(i < filled ? "=" : "-");
         }
         bar.append("]");
-        drawLine(row++, bar.toString());
+        lines.add(bar.toString());
 
-        fillRemainingLines(row);
-        drawBottomBar(" 按任意键返回 ");
+        renderOverlay("阅读进度", lines);
     }
 
     public void drawInfoScreen(Book book) {
-        clearContent();
-        int row = 0;
+        List<String> lines = new ArrayList<>();
+        lines.add(String.format("  书名: %s", book.getTitle()));
+        lines.add(String.format("  作者: %s", book.getAuthor()));
+        lines.add(String.format("  章节数: %d", book.getChapterCount()));
+        lines.add(String.format("  总页数: %d", book.getTotalPages()));
+        lines.add(String.format("  终端尺寸: %d x %d", terminalWidth, terminalHeight));
+        lines.add("");
+        lines.add(dim("  每页行数: " + (terminalHeight - 2)));
 
-        drawLine(row++, bold("书籍信息"));
-        drawLine(row++, repeat("-", terminalWidth));
-        row++;
-        drawLine(row++, String.format("  书名: %s", book.getTitle()));
-        drawLine(row++, String.format("  作者: %s", book.getAuthor()));
-        drawLine(row++, String.format("  章节数: %d", book.getChapterCount()));
-        drawLine(row++, String.format("  总页数: %d", book.getTotalPages()));
-        drawLine(row++, String.format("  终端尺寸: %d x %d", terminalWidth, terminalHeight));
-        row++;
-        drawLine(row++, dim("  每页行数: " + (terminalHeight - 2)));
-
-        fillRemainingLines(row);
-        drawBottomBar(" 按任意键返回 ");
+        renderOverlay("书籍信息", lines);
     }
 
     // ==================== READING 模式 ====================
@@ -553,6 +546,63 @@ public class ScreenRenderer {
         moveCursorTo(terminalHeight, 1);
         write(dim(hint) + CURSOR_HIDE);
         flush();
+    }
+
+    // 覆盖层底部保留行数（上横线 + 提示行 + 下横线）
+    private static final int OVERLAY_BOTTOM_ROWS = 3;
+
+    /** 绘制覆盖层标题栏：反色实线背景，无 Unicode 制表符边框 */
+    private void drawOverlayTitle(int row, String title) {
+        if (row >= terminalHeight) return;
+        moveCursorTo(row + 1, 1);
+        write(REVERSE);
+        write(padRightVisual("  " + title, terminalWidth));
+        write(RESET);
+    }
+
+    /** 绘制覆盖层底部：上横线 + 青色 > 提示 + 下横线 */
+    private void drawOverlayBottom(String leftHint) {
+        String border = dim(repeat("─", terminalWidth));
+        moveCursorTo(terminalHeight - 2, 1);
+        write(border);
+        moveCursorTo(terminalHeight - 1, 1);
+        write("\033[K");
+        write(CYAN + "> " + RESET + dim(leftHint));
+        moveCursorTo(terminalHeight, 1);
+        write(border);
+        write(CURSOR_HIDE);
+        flush();
+    }
+
+    /**
+     * 绘制覆盖层面板：底部对齐，标题用反色实线，底部 3 行提示区域。
+     * 覆盖层以外的区域不绘制，旧内容自然透出。
+     *
+     * @param title        标题文字
+     * @param contentLines 内容行列表（已含 ANSI 样式）
+     */
+    private void renderOverlay(String title, List<String> contentLines) {
+        int available = terminalHeight - OVERLAY_BOTTOM_ROWS;  // 标题 + 内容可用的行数
+        int needed = 1 + contentLines.size();
+        int startRow = Math.max(0, available - needed);  // 底部对齐
+
+        // 标题栏（反色实线）
+        drawOverlayTitle(startRow, title);
+
+        // 内容行
+        int row = startRow + 1;
+        for (String line : contentLines) {
+            if (row >= available) break;
+            drawLine(row++, line);
+        }
+
+        // 内容与底部提示之间的空白（确保覆盖层连续）
+        for (int r = row; r < available; r++) {
+            drawLine(r, "");
+        }
+
+        // 底部提示区域
+        drawOverlayBottom("按任意键返回");
     }
 
     /** 绘制命令面板的上下横线边框（终端底部 3 行面板） */
