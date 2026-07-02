@@ -121,6 +121,8 @@ com.xzy.epubreader
 ### CJK 显示宽度
 - `PageRenderer.getCharDisplayWidth(char)` — 权威实现，检查 UnicodeBlock 范围
 - 涵盖：CJK 统一表意文字（含扩展 A/B）、日韩文字、全角符号、中文标点、表情符号等
+- **注意**：不包含 `0x2000..0x206F`（通用标点），此范围内的字符如 EM DASH（—）、省略号（…）等属于
+  ambiguous-width，Windows 终端实际渲染为宽度 1，标为宽度 2 会导致分页换行和行填充异常
 - `ScreenRenderer.displayWidth()` / `padRightVisual()` — 使用上述方法做视觉宽度计算
 - 分页和命令面板布局均基于视觉宽度，非字符数
 

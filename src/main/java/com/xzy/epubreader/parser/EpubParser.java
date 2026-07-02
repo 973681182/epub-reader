@@ -168,6 +168,27 @@ public class EpubParser {
     }
 
     /**
+     * 将字符规范化以适配终端等宽字体显示。
+     *
+     * <p>EM DASH（U+2014）的 glyph 在等宽终端字体中超出单个 cell 宽度，连续两个会重叠。
+     * 替换为 BOX DRAWINGS LIGHT HORIZONTAL（U+2500），精确 1 cell 宽，不会溢出。
+     * 两个连续的 EM DASH（——）替换为 "── ──"（两段各两个短横线，中间空格隔开），
+     * 还原中文破折号"两段独立横线"的视觉效果。
+     */
+    private static String normalizeForTerminal(String text) {
+        // 先处理成对出现的情况（—— / ――），优先级高于单字符替换
+        // 两个 EM DASH "——" → "── ──"（4 个短横线 + 中间空格）
+        text = text.replace("——", "── ──");
+        text = text.replace("――", "── ──");
+        // 单个 EM DASH / HORIZONTAL BAR → 两个短横线
+        text = text.replace('—', '─');
+        text = text.replace('―', '─');
+        // EN DASH → ASCII hyphen
+        text = text.replace('–', '-');
+        return text;
+    }
+
+    /**
      * 将 EPUB 资源（HTML/XHTML）转换为纯文本。
      * <p>
      * 手动遍历 body 的 DOM 树，在每个块级元素（&lt;p&gt;、&lt;div&gt;、&lt;h1&gt;~&lt;h6&gt; 等）
@@ -208,10 +229,16 @@ public class EpubParser {
             });
 
             // 规范化空白：去掉行首尾空白/制表符，合并多个连续空行
-            return sb.toString()
+            String result = sb.toString()
                     .replaceAll("[ \\t]*\\n[ \\t]*", "\n")
                     .replaceAll("\\n{3,}", "\n\n")
                     .trim();
+
+            // 终端字体兼容：部分 Unicode 字符的 glyph 在等宽终端字体中超出单个 cell 宽度，
+            // 替换为终端友好的等价字符，避免重叠和溢出。
+            result = normalizeForTerminal(result);
+
+            return result;
         } catch (IOException e) {
             // 资源读取失败，返回空字符串
             return "";
